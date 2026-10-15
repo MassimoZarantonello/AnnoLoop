@@ -1,0 +1,37 @@
+# Example experiment config. Copy it per dataset / experiment and adjust.
+# Marker names must match the channel names in the SpatialData image element.
+# The final MACSIMA panel is not decided yet: values below are placeholders.
+
+name: macrophages_example
+target: macrophages
+
+image:
+  element: macsima_image             # image element in the .zarr store
+  baseline_labels: baseline_cellpose # labels element written by stock Cellpose
+
+channels:
+  # Cellpose input, in this order (max 3). The order is baked into the trained model.
+  cellpose: [F4/80, DAPI]
+  # Marker used to pre-select candidate macrophages for the biologists.
+  candidate_marker: F4/80
+
+candidates:
+  min_mean_intensity: null           # null = automatic threshold (Otsu)
+
+annotation:
+  shapes_prefix: macrophages_manual  # each annotator saves to macrophages_manual__<name>
+  class_label: macrophage
+
+roi:
+  size_px: 1024
+
+training:
+  learning_rate: 1.0e-5
+  weight_decay: 0.1
+  n_epochs: 100
+  batch_size: 1
+
+split:
+  group_by: sample                   # train/val/test never share a sample
+  val_fraction: 0.15
+  test_fraction: 0.15
