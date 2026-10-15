@@ -116,9 +116,7 @@ def parse_config(raw: Any, source: str = "<config>") -> ExperimentConfig:
     annotation = _section(root, "annotation", source, required={"shapes_prefix", "class_label"})
     candidates = _section(root, "candidates", source, optional={"min_mean_intensity"})
     roi = _section(root, "roi", source, optional={"size_px"})
-    training = _section(
-        root, "training", source, optional={"learning_rate", "weight_decay", "n_epochs", "batch_size"}
-    )
+    training = _section(root, "training", source, optional={"learning_rate", "weight_decay", "n_epochs", "batch_size"})
     split = _section(root, "split", source, optional={"group_by", "val_fraction", "test_fraction"})
 
     config = ExperimentConfig(
@@ -158,7 +156,9 @@ def parse_config(raw: Any, source: str = "<config>") -> ExperimentConfig:
         ),
         split=SplitConfig(
             group_by=_str(split.get("group_by", SplitConfig.group_by), f"{source}: split.group_by"),
-            val_fraction=_fraction(split.get("val_fraction", SplitConfig.val_fraction), f"{source}: split.val_fraction"),
+            val_fraction=_fraction(
+                split.get("val_fraction", SplitConfig.val_fraction), f"{source}: split.val_fraction"
+            ),
             test_fraction=_fraction(
                 split.get("test_fraction", SplitConfig.test_fraction), f"{source}: split.test_fraction"
             ),
