@@ -97,22 +97,14 @@ class InputConfig:
 class SegmentationStep:
     """One Cellpose run: which channels go in and where the mask is written."""
 
+    labels: str
+    """Labels element written to the ``.zarr`` store (the step's name in the config)."""
     channels: tuple[str, ...]
     """Cellpose input channels, in order (at most 3)."""
-    labels: str
-    """Labels element written to the ``.zarr`` store."""
     diameter: float | None = None
     """Expected object diameter in pixels. ``None`` lets Cellpose-SAM use the image as is."""
     model: str = "cpsam_v2"
     """Cellpose pretrained model name (e.g. ``cpsam_v2``, ``cpsam``) or path to a fine-tuned model."""
-
-
-@dataclass(frozen=True)
-class SegmentationConfig:
-    nuclei: SegmentationStep
-    """Nuclear segmentation, always run (usually DAPI only)."""
-    cells: SegmentationStep | None = None
-    """Optional second segmentation with another marker (e.g. a membrane marker, with or without DAPI)."""
 
 
 @dataclass(frozen=True)
@@ -128,7 +120,8 @@ class ExperimentConfig:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     split: SplitConfig = field(default_factory=SplitConfig)
     input: InputConfig | None = None
-    segmentation: SegmentationConfig | None = None
+    segmentation: tuple[SegmentationStep, ...] | None = None
+    """Segmentations to run, in config order; each writes its own labels element."""
     zarr: str | None = None
     """SpatialData store written by the pipeline."""
 
@@ -261,25 +254,26 @@ def _crop(value: Any, where: str) -> tuple[int, int, int, int] | None:
     return (y0, y1, x0, x1)
 
 
-def _segmentation(value: Any, where: str) -> SegmentationConfig | None:
+def _segmentation(value: Any, where: str) -> tuple[SegmentationStep, ...] | None:
+    """``{name: {channels, diameter?, model?}, ...}``: one Cellpose run per entry, in order."""
     if value is None:
         return None
     section = _mapping(value, where)
-    _check_keys(section, where, required={"nuclei"}, optional={"cells"})
-    nuclei = _segmentation_step(section["nuclei"], f"{where}.nuclei")
-    cells = None if section.get("cells") is None else _segmentation_step(section["cells"], f"{where}.cells")
-    if cells is not None and cells.labels == nuclei.labels:
-        raise ConfigError(f"{where}: nuclei and cells must write different labels elements.")
-    return SegmentationConfig(nuclei=nuclei, cells=cells)
+    if not section:
+        raise ConfigError(f"{where}: expected at least one segmentation.")
+    return tuple(_segmentation_step(name, step, f"{where}.{name}") for name, step in section.items())
 
 
-def _segmentation_step(value: Any, where: str) -> SegmentationStep:
+def _segmentation_step(name: Any, value: Any, where: str) -> SegmentationStep:
+    name = _str(name, where)
+    if "/" in name:
+        raise ConfigError(f"{where}: segmentation names cannot contain '/'.")
     section = _mapping(value, where)
-    _check_keys(section, where, required={"channels", "labels"}, optional={"diameter", "model"})
+    _check_keys(section, where, required={"channels"}, optional={"diameter", "model"})
     diameter = section.get("diameter")
     return SegmentationStep(
+        labels=name,
         channels=_cellpose_channels(section["channels"], f"{where}.channels"),
-        labels=_str(section["labels"], f"{where}.labels"),
         diameter=None if diameter is None else _positive_float(diameter, f"{where}.diameter"),
         model=_str(section.get("model", SegmentationStep.model), f"{where}.model"),
     )

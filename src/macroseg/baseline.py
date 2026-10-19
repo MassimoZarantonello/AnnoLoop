@@ -1,7 +1,8 @@
 """Baseline segmentation with the stock Cellpose-SAM model (``cpsam_v2``), plus intensities per object.
 
-Pipeline: ingest -> write ``.zarr`` -> nuclei segmentation (always) -> optional second
-segmentation with another marker -> mean, sum and max intensity of every channel per object.
+Pipeline: ingest -> write ``.zarr`` -> every segmentation listed in the config (e.g. DAPI only,
+membrane only, membrane + DAPI), each with its own labels element -> mean, sum and max intensity of
+every channel per object.
 
 Usage: python -m macroseg.baseline configs/<experiment>.yaml [--input FILE] [--zarr STORE] [--overwrite]
 """
@@ -105,15 +106,15 @@ def run(
     ingest(cfg.input, element, input_path).write(zarr_path)
     # Reopen backed by the store, so Harpy writes masks and tables straight to disk.
     sdata = read_zarr(zarr_path)
-    for step in (cfg.segmentation.nuclei, cfg.segmentation.cells):
-        if step is None:
-            continue
-        available = [str(c) for c in sdata.images[element].c.values]
+    # Check every step first, so a typo in the last one does not waste the earlier GPU runs.
+    available = [str(c) for c in sdata.images[element].c.values]
+    for step in cfg.segmentation:
         missing = set(step.channels) - set(available)
         if missing:
             raise ValueError(
                 f"Channels {sorted(missing)} of {step.labels!r} are not in image {element!r}. Available: {available}."
             )
+    for step in cfg.segmentation:
         sdata = segment(sdata, element, step, model=model, **model_kwargs)
         sdata = measure(sdata, element, step.labels)
     return sdata

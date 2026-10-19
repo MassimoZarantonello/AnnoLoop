@@ -101,8 +101,9 @@ def _config(path, zarr):
             "zarr": str(zarr),
             "image": {"element": "img"},
             "segmentation": {
-                "nuclei": {"channels": ["DAPI"], "labels": "nuclei"},
-                "cells": {"channels": ["NaK_ATPase", "DAPI"], "labels": "cells", "diameter": 20},
+                "nuclei": {"channels": ["DAPI"]},
+                "membrane": {"channels": ["NaK_ATPase"]},
+                "membrane_dapi": {"channels": ["NaK_ATPase", "DAPI"], "diameter": 20},
             },
             "channels": {"cellpose": ["DAPI"], "candidate_marker": "DAPI"},
             "annotation": {"shapes_prefix": "manual", "class_label": "macrophage"},
@@ -110,22 +111,23 @@ def _config(path, zarr):
     )
 
 
-def test_run_writes_masks_and_mean_sum_max(ome_tiff, tmp_path):
+def test_run_writes_one_mask_and_table_per_segmentation(ome_tiff, tmp_path):
     path, _ = ome_tiff
     zarr = tmp_path / "out.zarr"
     sdata = run(_config(path, zarr), model=threshold_model)
-    assert set(sdata.labels) == {"nuclei", "cells"}
+    assert set(sdata.labels) == {"nuclei", "membrane", "membrane_dapi"}
+    assert set(sdata.tables) == {"nuclei_intensities", "membrane_intensities", "membrane_dapi_intensities"}
     assert len(np.unique(sdata.labels["nuclei"].values)) - 1 == 3
     table = sdata.tables["nuclei_intensities"]
     assert table.n_obs == 3
     assert list(table.var_names) == ["DAPI", "NaK_ATPase"]
     assert {"sum_DAPI", "max_DAPI", "sum_NaK_ATPase", "max_NaK_ATPase"} <= set(table.obs.columns)
-    assert (zarr / "labels" / "cells").exists()
+    assert (zarr / "labels" / "membrane_dapi").exists()
     with pytest.raises(FileExistsError):
         run(_config(path, zarr), model=threshold_model)
     # Overwriting an existing store must work too (SpatialData cannot inspect the lazy TIFF reader).
     sdata = run(_config(path, zarr), overwrite=True, model=threshold_model)
-    assert set(sdata.labels) == {"nuclei", "cells"}
+    assert set(sdata.labels) == {"nuclei", "membrane", "membrane_dapi"}
 
 
 def test_config_segmentation_and_input_validation():
@@ -140,18 +142,16 @@ def test_config_segmentation_and_input_validation():
         parse_config({**base, "input": {"path": "a.tif", "channels": {"F4_80": "F4/80"}}})
     with pytest.raises(ConfigError, match="y0 < y1"):
         parse_config({**base, "input": {"path": "a.tif", "crop": [10, 5, 0, 10]}})
-    with pytest.raises(ConfigError, match="different labels"):
-        parse_config(
-            {
-                **base,
-                "segmentation": {
-                    "nuclei": {"channels": ["DAPI"], "labels": "m"},
-                    "cells": {"channels": ["DAPI"], "labels": "m"},
-                },
-            }
-        )
-    cfg = parse_config({**base, "segmentation": {"nuclei": {"channels": ["DAPI"], "labels": "n"}}})
-    assert cfg.segmentation.cells is None
+    with pytest.raises(ConfigError, match="at least one segmentation"):
+        parse_config({**base, "segmentation": {}})
+    with pytest.raises(ConfigError, match="unknown key"):
+        parse_config({**base, "segmentation": {"n": {"channels": ["DAPI"], "labels": "x"}}})
+    with pytest.raises(ConfigError, match="names cannot contain"):
+        parse_config({**base, "segmentation": {"a/b": {"channels": ["DAPI"]}}})
+    cfg = parse_config(
+        {**base, "segmentation": {"nuclei": {"channels": ["DAPI"]}, "both": {"channels": ["M", "DAPI"]}}}
+    )
+    assert [(s.labels, s.channels) for s in cfg.segmentation] == [("nuclei", ("DAPI",)), ("both", ("M", "DAPI"))]
     assert cfg.input is None
 
 
@@ -167,7 +167,7 @@ def test_view_adds_channels_and_outlines(ome_tiff, tmp_path, monkeypatch):
     monkeypatch.setattr(napari, "Viewer", lambda **kw: ViewerModel(**kw))  # no window needed
     viewer = open_viewer(zarr, channels=["NaK_ATPase"], run=False)
     layers = {layer.name: layer for layer in viewer.layers}
-    assert set(layers) == {"DAPI", "NaK_ATPase", "nuclei", "cells"}
+    assert set(layers) == {"DAPI", "NaK_ATPase", "nuclei", "membrane", "membrane_dapi"}
     assert layers["NaK_ATPase"].visible and not layers["DAPI"].visible
     assert layers["nuclei"].contour == 2
     with pytest.raises(ValueError, match="not in"):
@@ -177,6 +177,6 @@ def test_view_adds_channels_and_outlines(ome_tiff, tmp_path, monkeypatch):
 def test_segmentation_model_defaults_to_cpsam_v2():
     from macroseg.config import SegmentationStep, _segmentation_step
 
-    assert SegmentationStep(channels=("DAPI",), labels="n").model == "cpsam_v2"
-    step = _segmentation_step({"channels": ["DAPI"], "labels": "n", "model": "/models/finetuned"}, "seg")
+    assert SegmentationStep(labels="n", channels=("DAPI",)).model == "cpsam_v2"
+    step = _segmentation_step("n", {"channels": ["DAPI"], "model": "/models/finetuned"}, "seg")
     assert step.model == "/models/finetuned"

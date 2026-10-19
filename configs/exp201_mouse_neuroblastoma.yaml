@@ -25,18 +25,16 @@ image:
   element: macsima_image
 
 segmentation:
+  # One Cellpose run per entry, in this order. The name is the labels element in the .zarr
+  # (and in napari). Channels: up to 3, by their short names above.
+  # Optional per entry: diameter (pixels; null = no rescaling), model (default cpsam_v2,
+  # or a path to a fine-tuned model).
   nuclei:
     channels: [DAPI]
-    labels: nuclei_cellpose
-    diameter: null  # pixels; null = Cellpose-SAM without rescaling
-    model: cpsam_v2   # Cellpose-SAM v2; or a path to a fine-tuned model
-  cells:
-    # Second segmentation with a generic membrane marker. Alternatives: [NaK_ATPase] alone,
-    # or another marker in place of NaK_ATPase.
+  membrane:
+    channels: [NaK_ATPase]
+  membrane_dapi:
     channels: [NaK_ATPase, DAPI]
-    labels: cells_cellpose
-    diameter: null
-    model: cpsam_v2
 
 # Fine-tuning settings (later phases).
 channels:
