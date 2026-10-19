@@ -1,0 +1,46 @@
+# Exp201, SPC331: mouse neuroblastoma, MACSima (from Annelies, 2026-10-19).
+# DAPI, Na/K-ATPase (membrane), F4/80 (macrophages) and three autofluorescence channels
+# (FITC, PE, APC): macrophages are strongly autofluorescent, so these may help segmentation.
+# OME-TIFF, 6 x 7705 x 6272, uint16, 0.17 µm/pixel, 4 pyramid levels (x1, x4, x16, x64).
+# Paths are for Mewtwo; on the Mac pass --input / --zarr (or input_path / zarr_path) instead.
+
+name: exp201_mouse_neuroblastoma
+target: macrophages
+
+input:
+  path: /srv/data/massimoz/u_csc/private/DATA/MACSima/Exp201_SPC331_261014_AVH_SUBSET_SingleTiff.tif
+  level: 0          # 0 = full resolution, 1 = 4x smaller, ...
+  crop: null        # [y0, y1, x0, x1] in pixels of the chosen level; null = whole image
+  channels:         # file name -> short name (no "/"); unlisted channels are dropped
+    "DAPI C1 (DAPI C1)": DAPI
+    "Na_K_ATPase (APC C2)": NaK_ATPase
+    "F4_80 (APC C4)": F480
+    "FITC (FITC C0)": autofluo_FITC
+    "PE (PE C0)": autofluo_PE
+    "APC (APC C0)": autofluo_APC
+
+zarr: /srv/data/massimoz/macroseg/exp201_mouse_neuroblastoma.zarr
+
+image:
+  element: macsima_image
+
+segmentation:
+  nuclei:
+    channels: [DAPI]
+    labels: nuclei_cellpose
+    diameter: null  # pixels; null = Cellpose-SAM without rescaling
+  cells:
+    # Second segmentation with a generic membrane marker. Alternatives: [NaK_ATPase] alone,
+    # or another marker in place of NaK_ATPase.
+    channels: [NaK_ATPase, DAPI]
+    labels: cells_cellpose
+    diameter: null
+
+# Fine-tuning settings (later phases).
+channels:
+  cellpose: [F480, DAPI]
+  candidate_marker: F480
+
+annotation:
+  shapes_prefix: macrophages_manual
+  class_label: macrophage

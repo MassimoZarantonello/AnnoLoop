@@ -10,7 +10,7 @@ Unknown keys are rejected so that typos in a config fail loudly instead of being
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +78,41 @@ class SplitConfig:
 
 
 @dataclass(frozen=True)
+class InputConfig:
+    """Raw image to ingest. Paths are machine-specific: override them when running elsewhere."""
+
+    path: str
+    """OME-TIFF (``.tif``/``.tiff``) or CZI file."""
+    channels: Mapping[str, str] | None = None
+    """File channel name -> short name used everywhere else. Unlisted channels are dropped.
+    ``None`` keeps all channels with their file names."""
+    level: int = 0
+    """Pyramid level to read (0 = full resolution). Ignored for files without a pyramid."""
+    crop: tuple[int, int, int, int] | None = None
+    """``(y0, y1, x0, x1)`` in pixels of the chosen level; ``None`` reads the whole image."""
+
+
+@dataclass(frozen=True)
+class SegmentationStep:
+    """One Cellpose run: which channels go in and where the mask is written."""
+
+    channels: tuple[str, ...]
+    """Cellpose input channels, in order (at most 3)."""
+    labels: str
+    """Labels element written to the ``.zarr`` store."""
+    diameter: float | None = None
+    """Expected object diameter in pixels. ``None`` lets Cellpose-SAM use the image as is."""
+
+
+@dataclass(frozen=True)
+class SegmentationConfig:
+    nuclei: SegmentationStep
+    """Nuclear segmentation, always run (usually DAPI only)."""
+    cells: SegmentationStep | None = None
+    """Optional second segmentation with another marker (e.g. a membrane marker, with or without DAPI)."""
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     name: str
     target: str
@@ -89,6 +124,10 @@ class ExperimentConfig:
     roi: RoiConfig = field(default_factory=RoiConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     split: SplitConfig = field(default_factory=SplitConfig)
+    input: InputConfig | None = None
+    segmentation: SegmentationConfig | None = None
+    zarr: str | None = None
+    """SpatialData store written by the pipeline."""
 
 
 def load_config(path: str | Path) -> ExperimentConfig:
@@ -108,7 +147,7 @@ def parse_config(raw: Any, source: str = "<config>") -> ExperimentConfig:
         root,
         source,
         required={"name", "target", "image", "channels", "annotation"},
-        optional={"candidates", "roi", "training", "split"},
+        optional={"candidates", "roi", "training", "split", "input", "segmentation", "zarr"},
     )
 
     image = _section(root, "image", source, required={"element"}, optional={"baseline_labels"})
@@ -165,9 +204,81 @@ def parse_config(raw: Any, source: str = "<config>") -> ExperimentConfig:
         ),
     )
 
+    config = replace(
+        config,
+        input=_input(root.get("input"), f"{source}: input"),
+        segmentation=_segmentation(root.get("segmentation"), f"{source}: segmentation"),
+        zarr=None if root.get("zarr") is None else _str(root["zarr"], f"{source}: zarr"),
+    )
+
     if config.split.val_fraction + config.split.test_fraction >= 1:
         raise ConfigError(f"{source}: split.val_fraction + split.test_fraction must be < 1.")
     return config
+
+
+def _input(value: Any, where: str) -> InputConfig | None:
+    if value is None:
+        return None
+    section = _mapping(value, where)
+    _check_keys(section, where, required={"path"}, optional={"channels", "level", "crop"})
+    channels = section.get("channels")
+    if channels is not None:
+        channels = _mapping(channels, f"{where}.channels")
+        if not channels:
+            raise ConfigError(f"{where}.channels: expected at least one channel.")
+        channels = {_str(k, f"{where}.channels"): _str(v, f"{where}.channels") for k, v in channels.items()}
+        if len(set(channels.values())) != len(channels):
+            raise ConfigError(f"{where}.channels: short names must be unique, got {list(channels.values())}.")
+        if any("/" in name for name in channels.values()):
+            # Short names become table column and zarr element names, where "/" is a path separator.
+            raise ConfigError(f"{where}.channels: short names cannot contain '/', got {list(channels.values())}.")
+    level = section.get("level", InputConfig.level)
+    if isinstance(level, bool) or not isinstance(level, int) or level < 0:
+        raise ConfigError(f"{where}.level: expected a non-negative integer, got {level!r}.")
+    return InputConfig(
+        path=_str(section["path"], f"{where}.path"),
+        channels=channels,
+        level=level,
+        crop=_crop(section.get("crop"), f"{where}.crop"),
+    )
+
+
+def _crop(value: Any, where: str) -> tuple[int, int, int, int] | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in value)
+    ):
+        raise ConfigError(f"{where}: expected [y0, y1, x0, x1] as non-negative integers, got {value!r}.")
+    y0, y1, x0, x1 = value
+    if y1 <= y0 or x1 <= x0:
+        raise ConfigError(f"{where}: expected y0 < y1 and x0 < x1, got {value!r}.")
+    return (y0, y1, x0, x1)
+
+
+def _segmentation(value: Any, where: str) -> SegmentationConfig | None:
+    if value is None:
+        return None
+    section = _mapping(value, where)
+    _check_keys(section, where, required={"nuclei"}, optional={"cells"})
+    nuclei = _segmentation_step(section["nuclei"], f"{where}.nuclei")
+    cells = None if section.get("cells") is None else _segmentation_step(section["cells"], f"{where}.cells")
+    if cells is not None and cells.labels == nuclei.labels:
+        raise ConfigError(f"{where}: nuclei and cells must write different labels elements.")
+    return SegmentationConfig(nuclei=nuclei, cells=cells)
+
+
+def _segmentation_step(value: Any, where: str) -> SegmentationStep:
+    section = _mapping(value, where)
+    _check_keys(section, where, required={"channels", "labels"}, optional={"diameter"})
+    diameter = section.get("diameter")
+    return SegmentationStep(
+        channels=_cellpose_channels(section["channels"], f"{where}.channels"),
+        labels=_str(section["labels"], f"{where}.labels"),
+        diameter=None if diameter is None else _positive_float(diameter, f"{where}.diameter"),
+    )
 
 
 def _section(

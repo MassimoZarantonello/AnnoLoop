@@ -1,0 +1,40 @@
+# Exp199, SPC317: human colorectal cancer liver metastasis, MACSima (from Annelies, 2026-10-19).
+# DAPI, Na/K-ATPase (membrane), CD14 (monocytes), CD68 (macrophages).
+# OME-TIFF, 4 x 5223 x 33789 (a long strip), uint16, 0.17 µm/pixel, 4 pyramid levels.
+# Human sample: keep it on the server; ask before copying any part of it to the Mac.
+
+name: exp199_human_crc_liver_met
+target: macrophages
+
+input:
+  path: /srv/data/massimoz/u_csc/private/DATA/MACSima/Exp199_SPC317_Na_K_CD14_CD68.tif
+  level: 0
+  crop: null
+  channels:
+    "DAPI C1 (DAPI C1)": DAPI
+    "Na_K_ATPase (APC C4)": NaK_ATPase
+    "CD14 REA1314 (PE C5)": CD14
+    "CD68 REAL1346 (PE C6)": CD68
+
+zarr: /srv/data/massimoz/macroseg/exp199_human_crc_liver_met.zarr
+
+image:
+  element: macsima_image
+
+segmentation:
+  nuclei:
+    channels: [DAPI]
+    labels: nuclei_cellpose
+    diameter: null
+  cells:
+    channels: [NaK_ATPase, DAPI]
+    labels: cells_cellpose
+    diameter: null
+
+channels:
+  cellpose: [CD68, DAPI]
+  candidate_marker: CD68
+
+annotation:
+  shapes_prefix: macrophages_manual
+  class_label: macrophage
