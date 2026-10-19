@@ -17,6 +17,7 @@ dependencies = [
 imaging = [
   "cellpose>=4",
   "harpy-analysis>=0.5",
+  "pylibczirw>=6.1.0",
   "spatialdata>=0.8",
 ]
 # Annotation UI (napari + spatiato), to test the annotation workflow locally.
@@ -24,6 +25,7 @@ viewer = [
   "spatiato>=0.2.1",
 ]
 dev = [
+  "ipykernel>=6.31.0",
   "pytest>=8",
   "ruff>=0.6",
 ]
