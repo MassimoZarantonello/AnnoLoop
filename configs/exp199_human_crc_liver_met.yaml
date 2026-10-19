@@ -26,10 +26,12 @@ segmentation:
     channels: [DAPI]
     labels: nuclei_cellpose
     diameter: null
+    model: cpsam_v2   # Cellpose-SAM v2; or a path to a fine-tuned model
   cells:
     channels: [NaK_ATPase, DAPI]
     labels: cells_cellpose
     diameter: null
+    model: cpsam_v2
 
 channels:
   cellpose: [CD68, DAPI]

@@ -1,4 +1,4 @@
-"""Baseline segmentation with the stock Cellpose-SAM model, plus intensities per object.
+"""Baseline segmentation with the stock Cellpose-SAM model (``cpsam_v2``), plus intensities per object.
 
 Pipeline: ingest -> write ``.zarr`` -> nuclei segmentation (always) -> optional second
 segmentation with another marker -> mean, sum and max intensity of every channel per object.
@@ -30,14 +30,14 @@ def segment(
 ) -> SpatialData:
     """Run one segmentation step chunk-wise with Harpy and add ``step.labels`` to ``sdata``.
 
-    ``model`` defaults to Cellpose-SAM; extra keyword arguments go to the model
+    ``model`` defaults to Cellpose with ``step.model`` (Cellpose-SAM v2); extra keyword arguments go to the model
     (e.g. ``device="cuda:0"``, ``batch_size=16``, ``flow_threshold=0.4``).
     """
     import harpy as hp
 
     if model is None:
         model = hp.im.cellpose_callable
-        model_kwargs = {"pretrained_model": "cpsam", "diameter": step.diameter, **model_kwargs}
+        model_kwargs = {"pretrained_model": step.model, "diameter": step.diameter, **model_kwargs}
     # Chunks overlap by `depth` pixels; Harpy recommends more than twice the object diameter.
     depth = DEFAULT_DEPTH_PX if step.diameter is None else max(DEFAULT_DEPTH_PX, int(2 * step.diameter) + 1)
     return hp.im.segment(

@@ -144,3 +144,30 @@ def test_config_segmentation_and_input_validation():
     cfg = parse_config({**base, "segmentation": {"nuclei": {"channels": ["DAPI"], "labels": "n"}}})
     assert cfg.segmentation.cells is None
     assert cfg.input is None
+
+
+def test_view_adds_channels_and_outlines(ome_tiff, tmp_path, monkeypatch):
+    napari = pytest.importorskip("napari")
+    from napari.components import ViewerModel
+
+    from macroseg.view import open_viewer
+
+    path, _ = ome_tiff
+    zarr = tmp_path / "out.zarr"
+    run(_config(path, zarr), model=threshold_model)
+    monkeypatch.setattr(napari, "Viewer", lambda **kw: ViewerModel(**kw))  # no window needed
+    viewer = open_viewer(zarr, channels=["NaK_ATPase"], run=False)
+    layers = {layer.name: layer for layer in viewer.layers}
+    assert set(layers) == {"DAPI", "NaK_ATPase", "nuclei", "cells"}
+    assert layers["NaK_ATPase"].visible and not layers["DAPI"].visible
+    assert layers["nuclei"].contour == 2
+    with pytest.raises(ValueError, match="not in"):
+        open_viewer(zarr, channels=["missing"], run=False)
+
+
+def test_segmentation_model_defaults_to_cpsam_v2():
+    from macroseg.config import SegmentationStep, _segmentation_step
+
+    assert SegmentationStep(channels=("DAPI",), labels="n").model == "cpsam_v2"
+    step = _segmentation_step({"channels": ["DAPI"], "labels": "n", "model": "/models/finetuned"}, "seg")
+    assert step.model == "/models/finetuned"

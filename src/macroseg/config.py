@@ -102,6 +102,8 @@ class SegmentationStep:
     """Labels element written to the ``.zarr`` store."""
     diameter: float | None = None
     """Expected object diameter in pixels. ``None`` lets Cellpose-SAM use the image as is."""
+    model: str = "cpsam_v2"
+    """Cellpose pretrained model name (e.g. ``cpsam_v2``, ``cpsam``) or path to a fine-tuned model."""
 
 
 @dataclass(frozen=True)
@@ -272,12 +274,13 @@ def _segmentation(value: Any, where: str) -> SegmentationConfig | None:
 
 def _segmentation_step(value: Any, where: str) -> SegmentationStep:
     section = _mapping(value, where)
-    _check_keys(section, where, required={"channels", "labels"}, optional={"diameter"})
+    _check_keys(section, where, required={"channels", "labels"}, optional={"diameter", "model"})
     diameter = section.get("diameter")
     return SegmentationStep(
         channels=_cellpose_channels(section["channels"], f"{where}.channels"),
         labels=_str(section["labels"], f"{where}.labels"),
         diameter=None if diameter is None else _positive_float(diameter, f"{where}.diameter"),
+        model=_str(section.get("model", SegmentationStep.model), f"{where}.model"),
     )
 
 

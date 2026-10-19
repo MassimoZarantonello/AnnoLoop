@@ -29,12 +29,14 @@ segmentation:
     channels: [DAPI]
     labels: nuclei_cellpose
     diameter: null  # pixels; null = Cellpose-SAM without rescaling
+    model: cpsam_v2   # Cellpose-SAM v2; or a path to a fine-tuned model
   cells:
     # Second segmentation with a generic membrane marker. Alternatives: [NaK_ATPase] alone,
     # or another marker in place of NaK_ATPase.
     channels: [NaK_ATPase, DAPI]
     labels: cells_cellpose
     diameter: null
+    model: cpsam_v2
 
 # Fine-tuning settings (later phases).
 channels:
