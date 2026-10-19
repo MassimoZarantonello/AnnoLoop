@@ -9,6 +9,7 @@ Usage: python -m macroseg.baseline configs/<experiment>.yaml [--input FILE] [--z
 from __future__ import annotations
 
 import argparse
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -90,8 +91,14 @@ def run(
     if zarr_path.exists() and not overwrite:
         raise FileExistsError(f"{zarr_path} exists; pass overwrite=True (--overwrite) to replace it.")
 
+    if zarr_path.exists():
+        # Remove the old store ourselves: SpatialData's own overwrite check fails on the lazy TIFF reader.
+        if zarr_path.suffix != ".zarr" or not zarr_path.is_dir():
+            raise ValueError(f"Refusing to overwrite {zarr_path}: not a .zarr directory.")
+        shutil.rmtree(zarr_path)
+
     element = cfg.image.element
-    ingest(cfg.input, element, input_path).write(zarr_path, overwrite=overwrite)
+    ingest(cfg.input, element, input_path).write(zarr_path)
     # Reopen backed by the store, so Harpy writes masks and tables straight to disk.
     sdata = read_zarr(zarr_path)
     for step in (cfg.segmentation.nuclei, cfg.segmentation.cells):

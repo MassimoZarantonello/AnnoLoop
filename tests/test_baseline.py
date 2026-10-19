@@ -114,6 +114,9 @@ def test_run_writes_masks_and_mean_sum_max(ome_tiff, tmp_path):
     assert (zarr / "labels" / "cells").exists()
     with pytest.raises(FileExistsError):
         run(_config(path, zarr), model=threshold_model)
+    # Overwriting an existing store must work too (SpatialData cannot inspect the lazy TIFF reader).
+    sdata = run(_config(path, zarr), overwrite=True, model=threshold_model)
+    assert set(sdata.labels) == {"nuclei", "cells"}
 
 
 def test_config_segmentation_and_input_validation():
