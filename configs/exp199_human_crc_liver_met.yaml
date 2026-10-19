@@ -16,7 +16,7 @@ input:
     "CD14 REA1314 (PE C5)": CD14
     "CD68 REAL1346 (PE C6)": CD68
 
-zarr: /srv/data/massimoz/macroseg/exp199_human_crc_liver_met.zarr
+zarr: /srv/data/massimoz/macroseg_runs/exp199_human_crc_liver_met.zarr
 
 image:
   element: macsima_image

@@ -19,7 +19,7 @@ input:
     "PE (PE C0)": autofluo_PE
     "APC (APC C0)": autofluo_APC
 
-zarr: /srv/data/massimoz/macroseg/exp201_mouse_neuroblastoma.zarr
+zarr: /srv/data/massimoz/macroseg_runs/exp201_mouse_neuroblastoma.zarr
 
 image:
   element: macsima_image
