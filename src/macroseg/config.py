@@ -85,7 +85,8 @@ class InputConfig:
     """OME-TIFF (``.tif``/``.tiff``) or CZI file."""
     channels: Mapping[str, str] | None = None
     """File channel name -> short name used everywhere else. Unlisted channels are dropped.
-    ``None`` keeps all channels with their file names."""
+    ``None`` keeps all channels, named by the first word of their file name
+    (``"Na_K_ATPase (APC C2)"`` -> ``Na_K_ATPase``)."""
     level: int = 0
     """Pyramid level to read (0 = full resolution). Ignored for files without a pyramid."""
     crop: tuple[int, int, int, int] | None = None

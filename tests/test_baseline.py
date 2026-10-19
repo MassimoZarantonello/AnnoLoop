@@ -52,10 +52,19 @@ def test_ingest_renames_crops_and_reads_pixel_size(ome_tiff):
     assert sdata.attrs["pixel_size_um"] == pytest.approx(0.17)
 
 
-def test_ingest_keeps_file_names_without_mapping(ome_tiff):
+def test_ingest_shortens_file_names_without_mapping(ome_tiff):
     path, _ = ome_tiff
     sdata = ingest(InputConfig(path=str(path)), "img")
-    assert [str(c) for c in sdata.images["img"].c.values] == FILE_NAMES
+    assert [str(c) for c in sdata.images["img"].c.values] == ["DAPI", "Na_K_ATPase", "F4_80"]
+
+
+def test_short_names():
+    from macroseg.ingest import short_names
+
+    names = ["CD68 REAL1346 (PE C6)", "FITC (FITC C0)", "F4/80", "DAPI"]
+    assert short_names(names) == ["CD68", "FITC", "F4_80", "DAPI"]
+    with pytest.raises(ValueError, match="duplicate short names"):
+        short_names(["DAPI C1 (DAPI C1)", "DAPI C2 (DAPI C2)"])
 
 
 @pytest.mark.parametrize(

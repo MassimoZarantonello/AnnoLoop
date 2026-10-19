@@ -108,9 +108,12 @@ def run(
     for step in (cfg.segmentation.nuclei, cfg.segmentation.cells):
         if step is None:
             continue
-        missing = set(step.channels) - {str(c) for c in sdata.images[element].c.values}
+        available = [str(c) for c in sdata.images[element].c.values]
+        missing = set(step.channels) - set(available)
         if missing:
-            raise ValueError(f"Channels {sorted(missing)} of {step.labels!r} are not in image {element!r}.")
+            raise ValueError(
+                f"Channels {sorted(missing)} of {step.labels!r} are not in image {element!r}. Available: {available}."
+            )
         sdata = segment(sdata, element, step, model=model, **model_kwargs)
         sdata = measure(sdata, element, step.labels)
     return sdata

@@ -54,12 +54,27 @@ def _select_channels(
     image: da.Array, names: list[str], mapping: Mapping[str, str] | None
 ) -> tuple[da.Array, list[str]]:
     if mapping is None:
-        return image, names
+        return image, short_names(names)
     missing = [name for name in mapping if name not in names]
     if missing:
         raise ValueError(f"Channels {missing} not in the file. Available: {names}.")
     index = [names.index(name) for name in mapping]
     return image[index], list(mapping.values())
+
+
+def short_names(names: list[str]) -> list[str]:
+    """First word of each file channel name: ``"Na_K_ATPase (APC C2)"`` -> ``"Na_K_ATPase"``.
+
+    Raises if two channels get the same short name; then list them under ``input.channels``.
+    """
+    short = [re.split(r"[\s(]", name.strip(), maxsplit=1)[0].replace("/", "_") or name for name in names]
+    duplicates = sorted({name for name in short if short.count(name) > 1})
+    if duplicates:
+        raise ValueError(
+            f"Channels {names} give duplicate short names {duplicates}; "
+            "map them explicitly under input.channels in the config."
+        )
+    return short
 
 
 def _read_ome_tiff(path: Path, level: int) -> tuple[da.Array, list[str], float | None]:
