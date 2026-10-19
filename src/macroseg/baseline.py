@@ -13,6 +13,7 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
+import dask
 from spatialdata import SpatialData, read_zarr
 
 from macroseg.config import ExperimentConfig, SegmentationStep, load_config
@@ -40,17 +41,20 @@ def segment(
         model_kwargs = {"pretrained_model": step.model, "diameter": step.diameter, **model_kwargs}
     # Chunks overlap by `depth` pixels; Harpy recommends more than twice the object diameter.
     depth = DEFAULT_DEPTH_PX if step.diameter is None else max(DEFAULT_DEPTH_PX, int(2 * step.diameter) + 1)
-    return hp.im.segment(
-        sdata,
-        image_name=element,
-        image_channels=list(step.channels),
-        model=model,
-        output_labels_name=step.labels,
-        output_shapes_name=None,
-        depth=depth,
-        overwrite=True,
-        **model_kwargs,
-    )
+    # One chunk at a time: every chunk loads its own Cellpose model on the GPU, so parallel
+    # chunks fill the GPU memory (CUDA out of memory on a whole slide).
+    with dask.config.set(scheduler="synchronous"):
+        return hp.im.segment(
+            sdata,
+            image_name=element,
+            image_channels=list(step.channels),
+            model=model,
+            output_labels_name=step.labels,
+            output_shapes_name=None,
+            depth=depth,
+            overwrite=True,
+            **model_kwargs,
+        )
 
 
 def measure(sdata: SpatialData, element: str, labels: str) -> SpatialData:
