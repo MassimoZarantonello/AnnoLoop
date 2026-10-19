@@ -86,14 +86,15 @@ that candidates are not being accepted uncritically.
 | `evaluate` | AP overall and macrophage-only | GPU cluster / anywhere |
 | `segment` | fine-tuned model on whole slides via Harpy | GPU cluster |
 
-All modules are developed and tested on the Mac on small or synthetic ROIs before running on
-the clusters.
+All modules are developed and tested on Mewtwo (VS Code Remote) on small crops or synthetic ROIs
+before running on whole slides; the Mac only displays results in napari.
 
 ## Compute
 
 | Step | Where |
 |---|---|
-| Development, tests | Mac |
+| Development, tests | Mewtwo (VS Code Remote) |
+| Viewing results (napari) | Mac |
 | Ingest, ROI cropping | Mewtwo |
 | Baseline, training, whole-slide segmentation | GPU cluster |
 | Annotation (prepared environment, no compute in session) | VIB Data Core (GUI, paid) |
