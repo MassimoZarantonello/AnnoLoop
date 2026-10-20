@@ -224,13 +224,17 @@ def plot_comparison(per_cell: dict[str, pd.DataFrame], marker: str, pixel_size_u
         low, high = np.nanpercentile(pooled, [0.5, 99.5])
         bins = np.geomspace(max(low, 1e-3), high, 60) if log else np.linspace(low, high, 60)
         for name in names:
-            ax.hist(values[name], bins=bins, histtype="step", linewidth=2, color=colors[name], label=name, density=True)
+            # Percent of cells per bin, not density: with log-spaced bins, density inflates the narrow left bins.
+            weights = np.full(len(values[name]), 100 / max(len(values[name]), 1))
+            ax.hist(
+                values[name], bins=bins, weights=weights, histtype="step", linewidth=2, color=colors[name], label=name
+            )
         if log:
             ax.set_xscale("log")
         if column == "border_ratio":
             ax.axvline(1, color="0.5", linewidth=1, linestyle="--")
         ax.set_xlabel(xlabel)
-        ax.set_ylabel("density")
+        ax.set_ylabel("% of cells per bin")
         ax.set_title(title)
     for ax in axes.flat:
         ax.grid(alpha=0.2)
