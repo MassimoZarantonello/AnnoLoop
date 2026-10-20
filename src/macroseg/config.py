@@ -95,16 +95,21 @@ class InputConfig:
 
 @dataclass(frozen=True)
 class SegmentationStep:
-    """One Cellpose run: which channels go in and where the mask is written."""
+    """One segmentation, written to labels element ``labels``. Either a Cellpose run on ``channels``,
+    or (``expand`` set) an earlier segmentation grown by ``distance_um``, e.g. nuclei -> approximate cells."""
 
     labels: str
     """Labels element written to the ``.zarr`` store (the step's name in the config)."""
-    channels: tuple[str, ...]
-    """Cellpose input channels, in order (at most 3)."""
+    channels: tuple[str, ...] = ()
+    """Cellpose input channels, in order (at most 3). Empty for an expansion."""
     diameter: float | None = None
     """Expected object diameter in pixels. ``None`` lets Cellpose-SAM use the image as is."""
     model: str = "cpsam_v2"
     """Cellpose pretrained model name (e.g. ``cpsam_v2``, ``cpsam``) or path to a fine-tuned model."""
+    expand: str | None = None
+    """Name of an earlier step whose objects are grown, instead of running Cellpose."""
+    distance_um: float | None = None
+    """How far each object of ``expand`` grows, in µm (objects stop where they meet)."""
 
 
 @dataclass(frozen=True)
@@ -255,13 +260,18 @@ def _crop(value: Any, where: str) -> tuple[int, int, int, int] | None:
 
 
 def _segmentation(value: Any, where: str) -> tuple[SegmentationStep, ...] | None:
-    """``{name: {channels, diameter?, model?}, ...}``: one Cellpose run per entry, in order."""
+    """``{name: step, ...}``, run in order. A step is ``{channels, diameter?, model?}`` (Cellpose)
+    or ``{expand: <earlier step>, distance_um}`` (grow an earlier segmentation)."""
     if value is None:
         return None
     section = _mapping(value, where)
     if not section:
         raise ConfigError(f"{where}: expected at least one segmentation.")
-    return tuple(_segmentation_step(name, step, f"{where}.{name}") for name, step in section.items())
+    steps = tuple(_segmentation_step(name, step, f"{where}.{name}") for name, step in section.items())
+    for i, step in enumerate(steps):
+        if step.expand is not None and step.expand not in {s.labels for s in steps[:i]}:
+            raise ConfigError(f"{where}.{step.labels}.expand: {step.expand!r} must be an earlier segmentation.")
+    return steps
 
 
 def _segmentation_step(name: Any, value: Any, where: str) -> SegmentationStep:
@@ -269,6 +279,13 @@ def _segmentation_step(name: Any, value: Any, where: str) -> SegmentationStep:
     if "/" in name:
         raise ConfigError(f"{where}: segmentation names cannot contain '/'.")
     section = _mapping(value, where)
+    if "expand" in section:
+        _check_keys(section, where, required={"expand", "distance_um"}, optional=set())
+        return SegmentationStep(
+            labels=name,
+            expand=_str(section["expand"], f"{where}.expand"),
+            distance_um=_positive_float(section["distance_um"], f"{where}.distance_um"),
+        )
     _check_keys(section, where, required={"channels"}, optional={"diameter", "model"})
     diameter = section.get("diameter")
     return SegmentationStep(

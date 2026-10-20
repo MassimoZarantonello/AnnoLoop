@@ -29,8 +29,13 @@ segmentation:
   # (and in napari). Channels: up to 3, by their short names above.
   # Optional per entry: diameter (pixels; null = no rescaling), model (default cpsam_v2,
   # or a path to a fine-tuned model).
+  # An entry with `expand: <earlier entry>` and `distance_um` grows that segmentation instead
+  # of running Cellpose (objects stop where they meet).
   nuclei:
     channels: [DAPI]
+  nuclei_expanded:        # "DAPI only" cells: nuclei grown by 3 µm (~18 px at 0.17 µm)
+    expand: nuclei
+    distance_um: 3
   membrane:
     channels: [NaK_ATPase]
   membrane_dapi:

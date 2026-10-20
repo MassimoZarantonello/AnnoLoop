@@ -104,6 +104,7 @@ def _config(path, zarr):
                 "nuclei": {"channels": ["DAPI"]},
                 "membrane": {"channels": ["NaK_ATPase"]},
                 "membrane_dapi": {"channels": ["NaK_ATPase", "DAPI"], "diameter": 20},
+                "nuclei_expanded": {"expand": "nuclei", "distance_um": 0.85},  # 5 px at 0.17 µm
             },
             "channels": {"cellpose": ["DAPI"], "candidate_marker": "DAPI"},
             "annotation": {"shapes_prefix": "manual", "class_label": "macrophage"},
@@ -115,8 +116,15 @@ def test_run_writes_one_mask_and_table_per_segmentation(ome_tiff, tmp_path):
     path, _ = ome_tiff
     zarr = tmp_path / "out.zarr"
     sdata = run(_config(path, zarr), model=threshold_model)
-    assert set(sdata.labels) == {"nuclei", "membrane", "membrane_dapi"}
-    assert set(sdata.tables) == {"nuclei_intensities", "membrane_intensities", "membrane_dapi_intensities"}
+    assert set(sdata.labels) == {"nuclei", "membrane", "membrane_dapi", "nuclei_expanded"}
+    assert set(sdata.tables) == {f"{n}_intensities" for n in ("nuclei", "membrane", "membrane_dapi", "nuclei_expanded")}
+    # Nuclei grown by 5 px (0.85 µm at 0.17 µm/px), exactly as skimage does it on the whole mask.
+    from skimage.segmentation import expand_labels
+
+    expected = expand_labels(sdata.labels["nuclei"].values, distance=5)
+    np.testing.assert_array_equal(sdata.labels["nuclei_expanded"].values, expected)
+    expanded = sdata.tables["nuclei_expanded_intensities"]
+    assert expanded.n_obs == 3 and (expanded.obs["shapeSize"] > 16 * 16).all()
     assert len(np.unique(sdata.labels["nuclei"].values)) - 1 == 3
     table = sdata.tables["nuclei_intensities"]
     assert table.n_obs == 3
@@ -130,7 +138,7 @@ def test_run_writes_one_mask_and_table_per_segmentation(ome_tiff, tmp_path):
         run(_config(path, zarr), model=threshold_model)
     # Overwriting an existing store must work too (SpatialData cannot inspect the lazy TIFF reader).
     sdata = run(_config(path, zarr), overwrite=True, model=threshold_model)
-    assert set(sdata.labels) == {"nuclei", "membrane", "membrane_dapi"}
+    assert set(sdata.labels) == {"nuclei", "membrane", "membrane_dapi", "nuclei_expanded"}
 
 
 def test_config_segmentation_and_input_validation():
@@ -155,6 +163,14 @@ def test_config_segmentation_and_input_validation():
         {**base, "segmentation": {"nuclei": {"channels": ["DAPI"]}, "both": {"channels": ["M", "DAPI"]}}}
     )
     assert [(s.labels, s.channels) for s in cfg.segmentation] == [("nuclei", ("DAPI",)), ("both", ("M", "DAPI"))]
+    cfg = parse_config(
+        {**base, "segmentation": {"n": {"channels": ["DAPI"]}, "big": {"expand": "n", "distance_um": 3}}}
+    )
+    assert (cfg.segmentation[1].expand, cfg.segmentation[1].distance_um) == ("n", 3.0)
+    with pytest.raises(ConfigError, match="must be an earlier segmentation"):
+        parse_config({**base, "segmentation": {"big": {"expand": "n", "distance_um": 3}, "n": {"channels": ["DAPI"]}}})
+    with pytest.raises(ConfigError, match="missing required key"):
+        parse_config({**base, "segmentation": {"n": {"channels": ["DAPI"]}, "big": {"expand": "n"}}})
     assert cfg.input is None
 
 
@@ -170,7 +186,7 @@ def test_view_adds_channels_and_outlines(ome_tiff, tmp_path, monkeypatch):
     monkeypatch.setattr(napari, "Viewer", lambda **kw: ViewerModel(**kw))  # no window needed
     viewer = open_viewer(zarr, channels=["NaK_ATPase"], run=False)
     layers = {layer.name: layer for layer in viewer.layers}
-    assert set(layers) == {"DAPI", "NaK_ATPase", "nuclei", "membrane", "membrane_dapi"}
+    assert set(layers) == {"DAPI", "NaK_ATPase", "nuclei", "membrane", "membrane_dapi", "nuclei_expanded"}
     assert layers["NaK_ATPase"].visible and not layers["DAPI"].visible
     assert layers["nuclei"].contour == 2
     with pytest.raises(ValueError, match="not in"):

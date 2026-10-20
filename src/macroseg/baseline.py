@@ -1,8 +1,9 @@
 """Baseline segmentation with the stock Cellpose-SAM model (``cpsam_v2``), plus intensities per object.
 
-Pipeline: ingest -> write ``.zarr`` -> every segmentation listed in the config (e.g. DAPI only,
-membrane only, membrane + DAPI), each with its own labels element -> mean, sum and max intensity of
-every channel per object.
+Pipeline: ingest -> write ``.zarr`` -> every segmentation listed in the config, each with its own
+labels element: Cellpose runs (e.g. DAPI only, membrane only, membrane + DAPI) or expansions of an
+earlier one (e.g. nuclei grown by a few µm as approximate cells) -> mean, sum and max intensity of
+every channel, and area, per object.
 
 Usage: python -m macroseg.baseline configs/<experiment>.yaml [--overwrite]
 Input image and output store come from the config (input.path, zarr).
@@ -59,6 +60,29 @@ def segment(
         )
 
 
+def expand(sdata: SpatialData, step: SegmentationStep) -> SpatialData:
+    """Grow every object of ``step.expand`` by ``step.distance_um`` into labels element ``step.labels``.
+
+    Objects grow into background only and stop where they meet a neighbour (``skimage`` ``expand_labels``,
+    chunk-wise through Harpy). The distance is converted to pixels with ``sdata.attrs["pixel_size_um"]``.
+    """
+    import harpy as hp
+
+    pixel_size = sdata.attrs.get("pixel_size_um")
+    if not pixel_size:
+        raise ValueError(f"{step.labels!r}: the image has no pixel size, so distance_um cannot be converted.")
+    distance_px = max(1, round(step.distance_um / pixel_size))
+    return hp.im.expand_labels(
+        sdata,
+        labels_name=step.expand,
+        distance=distance_px,
+        # Harpy recommends depth > object diameter + distance to avoid chunk-border effects.
+        depth=DEFAULT_DEPTH_PX + distance_px,
+        output_labels_name=step.labels,
+        overwrite=True,
+    )
+
+
 def measure(sdata: SpatialData, element: str, labels: str) -> SpatialData:
     """Intensity of every channel per object, in table ``<labels>_intensities``.
 
@@ -110,13 +134,18 @@ def run(
     # Check every step first, so a typo in the last one does not waste the earlier GPU runs.
     available = [str(c) for c in sdata.images[element].c.values]
     for step in cfg.segmentation:
+        if step.expand is not None:
+            continue
         missing = set(step.channels) - set(available)
         if missing:
             raise ValueError(
                 f"Channels {sorted(missing)} of {step.labels!r} are not in image {element!r}. Available: {available}."
             )
     for step in cfg.segmentation:
-        sdata = segment(sdata, element, step, model=model, **model_kwargs)
+        if step.expand is not None:
+            sdata = expand(sdata, step)
+        else:
+            sdata = segment(sdata, element, step, model=model, **model_kwargs)
         sdata = measure(sdata, element, step.labels)
     return sdata
 
