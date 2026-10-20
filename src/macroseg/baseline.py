@@ -62,9 +62,11 @@ def segment(
 def measure(sdata: SpatialData, element: str, labels: str) -> SpatialData:
     """Intensity of every channel per object, in table ``<labels>_intensities``.
 
-    ``.X`` holds the mean per channel; ``.obs`` holds ``<channel>_sum``, ``<channel>_max`` and the
-    object size in pixels (``shapeSize``). Sum or max suit markers that cover only part of a cell,
-    such as a membrane marker, whose mean is diluted by the cell interior.
+    ``.X`` holds the mean per channel; ``.obs`` holds ``sum_<channel>``, ``max_<channel>``, the
+    object area in pixels (``shapeSize``), ``cell_ID`` (the value in the labels element) and
+    ``fov_labels`` (the labels element). ``.obsm["spatial"]`` holds each object's centre (y, x).
+    Sum or max suit markers that cover only part of a cell, such as a membrane marker, whose mean
+    is diluted by the cell interior.
     """
     import harpy as hp
 
@@ -74,7 +76,7 @@ def measure(sdata: SpatialData, element: str, labels: str) -> SpatialData:
         labels_name=labels,
         output_table_name=f"{labels}_intensities",
         mode="mean",
-        obs_stats=["sum", "max"],
+        obs_stats=["sum", "max", "count"],  # "count" is stored as shapeSize (area in pixels)
         overwrite=True,
     )
 

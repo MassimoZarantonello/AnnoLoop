@@ -121,7 +121,10 @@ def test_run_writes_one_mask_and_table_per_segmentation(ome_tiff, tmp_path):
     table = sdata.tables["nuclei_intensities"]
     assert table.n_obs == 3
     assert list(table.var_names) == ["DAPI", "NaK_ATPase"]
-    assert {"sum_DAPI", "max_DAPI", "sum_NaK_ATPase", "max_NaK_ATPase"} <= set(table.obs.columns)
+    assert {"sum_DAPI", "max_DAPI", "sum_NaK_ATPase", "max_NaK_ATPase", "shapeSize"} <= set(table.obs.columns)
+    # The three synthetic nuclei are 16 x 16 squares; mean = sum / area.
+    assert (table.obs["shapeSize"] == 256).all()
+    np.testing.assert_allclose(table.obs["sum_DAPI"] / table.obs["shapeSize"], table.to_df()["DAPI"], rtol=1e-5)
     assert (zarr / "labels" / "membrane_dapi").exists()
     with pytest.raises(FileExistsError):
         run(_config(path, zarr), model=threshold_model)
