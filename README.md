@@ -15,42 +15,99 @@ See [docs/design.md](docs/design.md) for goals, workflow and decisions.
 |---|---|---|
 | Edit code, git commit / push | VS Code Remote (`mewtwo-code /srv/data/massimoz/macroseg`) | – |
 | Notebooks, tests, pipeline | yes | – |
-| Data and results | `/srv/data/massimoz/macroseg_runs/<name>.zarr` | copies in `data/runs/` |
+| Data and results | `/srv/data/massimoz/macroseg_runs/<name>.zarr` (+ `<name>.log`) | copies in `data/runs/` |
 | napari | – (no display) | `macroseg-view <name>` |
 
-Configs hold Mewtwo paths only.
+Configs hold Mewtwo paths only; input and output paths always come from the config.
 
 ```bash
 # on Mewtwo, in the repo
-uv sync --extra imaging --extra dev                                   # environment (once)
-.venv/bin/python -m macroseg.baseline configs/<experiment>.yaml       # import, segment, measure
+uv sync --extra imaging --extra dev                                         # environment (once)
+.venv/bin/python -m macroseg.baseline configs/<experiment>.yaml [--overwrite] # import, segment, measure
 .venv/bin/python -m pytest
 
-# on the Mac (shell function in ~/.zshrc)
+# on the Mac (shell function in ~/.zshrc; not available in the Claude app's ! commands)
 macroseg-view                         # list results on Mewtwo
-macroseg-view <name> [--channels DAPI F480]   # copy <name>.zarr to data/runs and open napari
+macroseg-view <name> [--channels DAPI F480]   # mirror <name>.zarr into data/runs and open napari
 ```
 
-For a quick test, set `input.crop: [y0, y1, x0, x1]` in the config. Without `input.channels`,
-channels are named by the first word of their file name (`"Na_K_ATPase (APC C2)"` -> `Na_K_ATPase`).
+Cellpose weights live in `/srv/data/massimoz/.cache/cellpose/models` (`CELLPOSE_LOCAL_MODELS_PATH`,
+set in `~/.profile` and `~/.bashrc` on Mewtwo), not in the shared home.
+
+## Pipeline (`macroseg.baseline`)
+
+1. **Ingest** (`ingest.py`): OME-TIFF (lazy, any pyramid level, optional crop) or CZI → SpatialData,
+   channels renamed to short names, pixel size kept in `sdata.attrs["pixel_size_um"]`.
+2. **Write** the image to the `.zarr` given in the config (`--overwrite` replaces an existing store).
+3. **Segmentations**, one per entry under `segmentation` in the config, each written as a labels
+   element with the entry's name:
+   - a Cellpose-SAM run (`cpsam_v2`) on up to 3 channels, chunk-wise through Harpy, one chunk at a
+     time on the GPU;
+   - or the expansion of an earlier segmentation by `distance_um` (objects stop where they meet).
+4. **Measure** every segmentation: table `<name>_intensities` with, per object, the mean of every
+   channel (`.X`), `sum_<channel>`, `max_<channel>`, area in pixels (`shapeSize`), `cell_ID` and
+   centre (`.obsm["spatial"]`).
+
+Exp201 whole slide (6 channels, 7705 × 6272): about 4 minutes on the RTX 4090.
+
+## Evaluation without ground truth (`macroseg.evaluate`, notebook 02)
+
+Uses only the channels used to segment (DAPI and the generic membrane marker):
+
+| Measure | Definition | Blind spot |
+|---|---|---|
+| Nuclei per cell | nuclei of the reference nuclear segmentation inside each cell (≥ 50 % of the nucleus area): 0, 1 or 2+; plus nuclei in no cell | not outlines; trivially perfect for grown nuclei |
+| Border ratio | per cell: mean membrane signal on the border pixels (2 px band) / mean on the inside pixels | favours segmentations that used the membrane channel |
+| Shape | area, solidity (area / convex hull area) | some cell types are genuinely irregular |
+
+Optional: marker separation of a population marker (`marker=`), off by default.
+`plot_intensity_per_cell` (mean / sum / max per cell) is descriptive, for the later classification phase.
+
+## Notebooks (run on Mewtwo, kernel `.venv`)
+
+| Notebook | Does |
+|---|---|
+| `01_baseline.ipynb` | the pipeline step by step, with per-pixel histograms of every channel |
+| `02_evaluation.ipynb` | per-pixel histograms of DAPI and membrane, the measures above, cells to inspect in napari |
 
 ## Layout
 
 ```
-configs/          one YAML per experiment: input image, channels, segmentation, output .zarr
+configs/          one YAML per experiment: input image, channels, segmentations, output .zarr
 docs/             design and (later) annotation guidelines
-notebooks/        step-by-step runs (histograms, segmentation)
-src/macroseg/     package code
+notebooks/        step-by-step runs (pipeline, evaluation)
+src/macroseg/     config, ingest, histograms, baseline, evaluate, view
 tests/            tests on synthetic data
 ```
 
 ## Configs
 
-Marker names and channel order are never hard-coded. Load an experiment config with:
+Marker names and channel order are never hard-coded. The parts used by the pipeline:
 
-```python
-from macroseg.config import load_config
-
-cfg = load_config("configs/example_macrophages.yaml")
-cfg.channels.cellpose  # Cellpose input channels, in order
+```yaml
+input:
+  path: /srv/data/massimoz/u_csc/private/DATA/MACSima/<file>.tif
+  level: 0                  # pyramid level (0 = full resolution)
+  crop: null                # [y0, y1, x0, x1] for a quick test; null = whole image
+  channels:                 # optional: file name -> short name; omitted = first word of each file name
+    "Na_K_ATPase (APC C2)": NaK_ATPase
+zarr: /srv/data/massimoz/macroseg_runs/<name>.zarr
+image:
+  element: macsima_image
+segmentation:               # run in this order; the name is the labels element
+  nuclei:          {channels: [DAPI]}
+  nuclei_expanded: {expand: nuclei, distance_um: 3}
+  membrane:        {channels: [NaK_ATPase]}
+  membrane_dapi:   {channels: [NaK_ATPase, DAPI]}     # optional per entry: diameter, model
 ```
+
+The `channels` (Cellpose input for fine-tuning) and `annotation` sections are for later phases.
+Load a config with `macroseg.config.load_config(path)`; unknown keys and invalid values fail loudly.
+
+## Next
+
+- Inspect suspicious cells (2+ nuclei, nuclei in no cell) in napari.
+- spatiato for cell selection: work on a separate local copy (`data/spatiato/<name>.zarr`) and back it
+  up to `/srv/data/massimoz/macroseg_annotations/`, because spatiato saves into the store's tables and
+  `macroseg-view` mirrors `data/runs` with `--delete`.
+- A small hand-annotated ground truth (also needed for fine-tuning).
