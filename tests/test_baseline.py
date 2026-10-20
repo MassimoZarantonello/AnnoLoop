@@ -180,3 +180,17 @@ def test_segmentation_model_defaults_to_cpsam_v2():
     assert SegmentationStep(labels="n", channels=("DAPI",)).model == "cpsam_v2"
     step = _segmentation_step("n", {"channels": ["DAPI"], "model": "/models/finetuned"}, "seg")
     assert step.model == "/models/finetuned"
+
+
+def test_ingest_pixel_size_follows_pyramid_level(tmp_path):
+    # MACSima-style pyramid: every level is 4x smaller than the previous one.
+    image = np.zeros((2, 256, 320), dtype=np.uint16)
+    path = tmp_path / "pyramid.ome.tif"
+    metadata = {"axes": "CYX", "Channel": {"Name": ["DAPI", "M"]}, "PhysicalSizeX": 0.17, "PhysicalSizeXUnit": "µm"}
+    with tifffile.TiffWriter(path, ome=True) as tif:
+        tif.write(image, subifds=2, metadata=metadata, photometric="minisblack")
+        for factor in (4, 16):
+            tif.write(image[:, ::factor, ::factor], subfiletype=1, photometric="minisblack")
+    sizes = {level: ingest(InputConfig(path=str(path), level=level), "img") for level in (0, 1, 2)}
+    assert [sizes[lv].images["img"].shape for lv in (0, 1, 2)] == [(2, 256, 320), (2, 64, 80), (2, 16, 20)]
+    assert [sizes[lv].attrs["pixel_size_um"] for lv in (0, 1, 2)] == pytest.approx([0.17, 0.68, 2.72])

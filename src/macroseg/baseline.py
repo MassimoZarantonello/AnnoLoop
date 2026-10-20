@@ -4,7 +4,8 @@ Pipeline: ingest -> write ``.zarr`` -> every segmentation listed in the config (
 membrane only, membrane + DAPI), each with its own labels element -> mean, sum and max intensity of
 every channel per object.
 
-Usage: python -m macroseg.baseline configs/<experiment>.yaml [--input FILE] [--zarr STORE] [--overwrite]
+Usage: python -m macroseg.baseline configs/<experiment>.yaml [--overwrite]
+Input image and output store come from the config (input.path, zarr).
 """
 
 from __future__ import annotations
@@ -80,19 +81,16 @@ def measure(sdata: SpatialData, element: str, labels: str) -> SpatialData:
 
 def run(
     cfg: ExperimentConfig,
-    input_path: str | Path | None = None,
-    zarr_path: str | Path | None = None,
     overwrite: bool = False,
     model: Callable | None = None,
     **model_kwargs,
 ) -> SpatialData:
-    """Full baseline pipeline. ``input_path`` and ``zarr_path`` override the paths in the config."""
+    """Full baseline pipeline: reads ``cfg.input.path`` and writes ``cfg.zarr``."""
     if cfg.input is None or cfg.segmentation is None:
         raise ValueError(f"Config {cfg.name!r} needs 'input' and 'segmentation' sections for the baseline.")
-    zarr_path = zarr_path or cfg.zarr
-    if zarr_path is None:
-        raise ValueError("Give a .zarr path, in the config ('zarr') or as zarr_path.")
-    zarr_path = Path(zarr_path)
+    if cfg.zarr is None:
+        raise ValueError(f"Config {cfg.name!r} needs a 'zarr' path for the output store.")
+    zarr_path = Path(cfg.zarr)
     if zarr_path.exists() and not overwrite:
         raise FileExistsError(f"{zarr_path} exists; pass overwrite=True (--overwrite) to replace it.")
 
@@ -103,7 +101,8 @@ def run(
         shutil.rmtree(zarr_path)
 
     element = cfg.image.element
-    ingest(cfg.input, element, input_path).write(zarr_path)
+    zarr_path.parent.mkdir(parents=True, exist_ok=True)
+    ingest(cfg.input, element).write(zarr_path)
     # Reopen backed by the store, so Harpy writes masks and tables straight to disk.
     sdata = read_zarr(zarr_path)
     # Check every step first, so a typo in the last one does not waste the earlier GPU runs.
@@ -123,13 +122,11 @@ def run(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("config", type=Path)
-    parser.add_argument("--input", type=Path, help="Raw image; overrides input.path in the config.")
-    parser.add_argument("--zarr", type=Path, help="Output store; overrides zarr in the config.")
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing .zarr store.")
     parser.add_argument("--device", help="Torch device, e.g. cuda:0, mps or cpu (default: automatic).")
     args = parser.parse_args()
     kwargs = {"device": args.device} if args.device else {}
-    sdata = run(load_config(args.config), args.input, args.zarr, overwrite=args.overwrite, **kwargs)
+    sdata = run(load_config(args.config), overwrite=args.overwrite, **kwargs)
     print(sdata)
 
 

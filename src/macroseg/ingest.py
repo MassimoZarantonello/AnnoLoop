@@ -21,9 +21,9 @@ from macroseg.config import InputConfig
 CHUNK_PX = 2048
 
 
-def ingest(cfg: InputConfig, element: str, path: str | Path | None = None) -> SpatialData:
-    """Read ``cfg.path`` (or ``path``, to override it on another machine) as image element ``element``."""
-    path = Path(path or cfg.path)
+def ingest(cfg: InputConfig, element: str) -> SpatialData:
+    """Read ``cfg.path`` as image element ``element``."""
+    path = Path(cfg.path)
     suffix = path.suffix.lower()
     if suffix in (".tif", ".tiff"):
         image, names, pixel_size = _read_ome_tiff(path, cfg.level)
@@ -45,7 +45,7 @@ def ingest(cfg: InputConfig, element: str, path: str | Path | None = None) -> Sp
         source=str(path),
         level=cfg.level,
         crop=list(cfg.crop) if cfg.crop else None,
-        pixel_size_um=None if pixel_size is None else pixel_size * 2**cfg.level,
+        pixel_size_um=pixel_size,
     )
     return sdata
 
@@ -78,6 +78,7 @@ def short_names(names: list[str]) -> list[str]:
 
 
 def _read_ome_tiff(path: Path, level: int) -> tuple[da.Array, list[str], float | None]:
+    """Lazy (channels, y, x) array of pyramid ``level``, channel names, pixel size in µm at that level."""
     import tifffile
     import zarr
 
@@ -88,6 +89,8 @@ def _read_ome_tiff(path: Path, level: int) -> tuple[da.Array, list[str], float |
         if level >= len(series.levels):
             raise ValueError(f"{path}: level {level} requested, file has {len(series.levels)} level(s).")
         metadata = tif.ome_metadata or ""
+        # Downsampling factor of the chosen level, from the real widths (MACSima pyramids use 4x per level).
+        downsampling = series.levels[0].shape[-1] / series.levels[level].shape[-1]
     names = re.findall(r'<Channel[^>]*\bName="([^"]*)"', metadata)
     n_channels = series.shape[0]
     if len(names) != n_channels:
@@ -95,7 +98,8 @@ def _read_ome_tiff(path: Path, level: int) -> tuple[da.Array, list[str], float |
     # Lazy: only the chunks that are used (e.g. a crop) are read from disk.
     store = tifffile.imread(path, aszarr=True, level=level)
     image = da.from_zarr(zarr.open(store, mode="r"))
-    return image, names, _pixel_size_um(metadata)
+    pixel_size = _pixel_size_um(metadata)
+    return image, names, None if pixel_size is None else pixel_size * downsampling
 
 
 def _pixel_size_um(ome_metadata: str) -> float | None:
