@@ -1,4 +1,4 @@
-"""Per-pixel intensity histograms of each channel (suggested by Ruth, 2026-10-16).
+"""Per-pixel intensity histograms of each channel.
 
 They show whether signal and background separate for a marker before segmenting with it.
 Large images are subsampled on a regular grid, so the whole slide is never loaded at once.

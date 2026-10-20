@@ -90,17 +90,22 @@ def test_evaluate_candidates_on_a_pipeline_store(tmp_path):
     )
     sdata = run(_config(path, tmp_path / "out.zarr"), model=threshold_model)
     summary, per_cell = evaluate_candidates(
-        sdata, "img", ["membrane", "nuclei_expanded"], nuclei="nuclei", membrane="NaK_ATPase", marker="DAPI"
+        sdata, "img", ["membrane", "nuclei_expanded"], nuclei="nuclei", membrane="NaK_ATPase"
     )
+    assert not any("ashman" in column for column in summary.columns)  # no marker: no separation measure
+    with_marker, _ = evaluate_candidates(
+        sdata, "img", ["membrane"], nuclei="nuclei", membrane="NaK_ATPase", marker="DAPI"
+    )
+    assert "DAPI_ashman_d" in with_marker.columns
     assert list(summary.index) == ["membrane", "nuclei_expanded"]
     # Grown nuclei contain exactly their own nucleus: the sanity check for this measure.
     assert summary.loc["nuclei_expanded", "cells_1_nucleus_%"] == 100
     assert summary.loc["nuclei_expanded", "nuclei_in_no_cell_%"] == 0
-    assert set(per_cell["membrane"].columns) >= {"cell_ID", "n_nuclei", "border_ratio", "marker_mean", "area"}
+    assert set(per_cell["membrane"].columns) >= {"cell_ID", "n_nuclei", "border_ratio", "area", "solidity"}
     import matplotlib
 
     matplotlib.use("Agg")
-    from macroseg.evaluate import plot_comparison
+    from macroseg.evaluate import plot_comparison, plot_intensity_per_cell
 
-    fig = plot_comparison(per_cell, marker="DAPI", pixel_size_um=0.17)
-    assert len(fig.axes) == 4
+    assert len(plot_comparison(per_cell, pixel_size_um=0.17).axes) == 4
+    assert len(plot_intensity_per_cell(sdata, ["membrane", "nuclei_expanded"], "NaK_ATPase").axes) == 3

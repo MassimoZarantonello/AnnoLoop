@@ -8,8 +8,8 @@ together (see the README of the evaluation notebook):
   growing that same segmentation.
 - ``border_ratio``: whether outlines lie on the membrane (membrane signal on the outline vs inside).
   Favours segmentations that used the membrane channel.
-- ``marker_separation``: whether each cell holds the signal of one cell only; with clean cells a
-  population marker (e.g. F4/80) splits into two well separated groups (Ruth's suggestion).
+- ``marker_separation`` (optional, needs a population marker such as F4/80): whether each cell holds
+  the signal of one cell only; with clean cells the marker splits into two well separated groups.
 - ``shape_features``: area, solidity and eccentricity, to spot abnormal objects.
 
 All functions take plain numpy arrays: 2D integer labels (0 = background) and 2D signals.
@@ -138,17 +138,17 @@ def evaluate_candidates(
     candidates: list[str],
     nuclei: str,
     membrane: str,
-    marker: str,
+    marker: str | None = None,
     border_width: int = 2,
 ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
-    """Run every measure on each candidate cell segmentation of a macroseg ``.zarr``.
+    """Run the measures on each candidate cell segmentation of a macroseg ``.zarr``.
 
     ``candidates`` are labels elements with cells; ``nuclei`` the reference nuclear labels element;
-    ``membrane`` and ``marker`` channel names of ``image``. The marker means come from the
-    ``<candidate>_intensities`` tables written by the baseline.
+    ``membrane`` a channel of ``image``. ``marker`` (optional) adds the marker separation measure,
+    from the per-cell means in the ``<candidate>_intensities`` tables written by the baseline.
 
     Returns ``(summary, per_cell)``: one summary row per candidate, and for each candidate a table
-    with one row per cell (n_nuclei, border ratio, marker mean, shape).
+    with one row per cell (n_nuclei, border ratio, shape, and marker mean if requested).
     """
     pixel_size = sdata.attrs.get("pixel_size_um") or float("nan")
     nuclei_labels = sdata.labels[nuclei].values
@@ -158,48 +158,81 @@ def evaluate_candidates(
         cells = sdata.labels[name].values
         counts, per_nucleus = nuclei_per_cell(cells, nuclei_labels)
         border = border_ratio(cells, membrane_signal, width=border_width)
-        table = sdata.tables[f"{name}_intensities"]
-        marker_mean = pd.DataFrame({"cell_ID": table.obs["cell_ID"].to_numpy(), "marker_mean": table.to_df()[marker]})
-        cells_table = (
-            counts.merge(border[["cell_ID", "ratio"]].rename(columns={"ratio": "border_ratio"}))
-            .merge(marker_mean, how="left")
-            .merge(shape_features(cells))
+        cells_table = counts.merge(border[["cell_ID", "ratio"]].rename(columns={"ratio": "border_ratio"})).merge(
+            shape_features(cells)
         )
-        separation = marker_separation(cells_table["marker_mean"].dropna())
         n = cells_table["n_nuclei"]
-        summary.append(
-            {
-                "segmentation": name,
-                "cells": len(cells_table),
-                "median_area_um2": cells_table["area"].median() * pixel_size**2,
-                "cells_0_nuclei_%": 100 * (n == 0).mean(),
-                "cells_1_nucleus_%": 100 * (n == 1).mean(),
-                "cells_2plus_nuclei_%": 100 * (n >= 2).mean(),
-                "nuclei_in_no_cell_%": 100 * (per_nucleus["cell_ID"] == 0).mean(),
-                "median_border_ratio": cells_table["border_ratio"].median(),
-                f"{marker}_ashman_d": separation["ashman_d"],
-                f"{marker}_ambiguous_%": 100 * separation["fraction_ambiguous"],
-                f"{marker}_positive_%": 100 * separation["fraction_positive"],
-                "median_solidity": cells_table["solidity"].median(),
-            }
-        )
+        row = {
+            "segmentation": name,
+            "cells": len(cells_table),
+            "median_area_um2": cells_table["area"].median() * pixel_size**2,
+            "cells_0_nuclei_%": 100 * (n == 0).mean(),
+            "cells_1_nucleus_%": 100 * (n == 1).mean(),
+            "cells_2plus_nuclei_%": 100 * (n >= 2).mean(),
+            "nuclei_in_no_cell_%": 100 * (per_nucleus["cell_ID"] == 0).mean(),
+            "median_border_ratio": cells_table["border_ratio"].median(),
+            "median_solidity": cells_table["solidity"].median(),
+        }
+        if marker is not None:
+            table = sdata.tables[f"{name}_intensities"]
+            means = pd.DataFrame({"cell_ID": table.obs["cell_ID"].to_numpy(), "marker_mean": table.to_df()[marker]})
+            cells_table = cells_table.merge(means, how="left")
+            separation = marker_separation(cells_table["marker_mean"].dropna())
+            row[f"{marker}_ashman_d"] = separation["ashman_d"]
+            row[f"{marker}_ambiguous_%"] = 100 * separation["fraction_ambiguous"]
+            row[f"{marker}_positive_%"] = 100 * separation["fraction_positive"]
+        summary.append(row)
         per_cell[name] = cells_table
     return pd.DataFrame(summary).set_index("segmentation"), per_cell
 
 
-# Categorical slots 1-3 of the dataviz reference palette (blue, orange, aqua), in fixed order.
+# Categorical slots 1-6 of the dataviz reference palette (blue, orange, aqua, ...), in fixed order.
 CANDIDATE_COLORS = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300")
 
 
-def plot_comparison(per_cell: dict[str, pd.DataFrame], marker: str, pixel_size_um: float):
-    """Four small multiples, one line or bar group per candidate (same colour everywhere):
-    nuclei per cell, border ratio, marker mean per cell (log axis) and cell area in µm² (log axis)."""
+def _colors(names: list[str]) -> dict[str, str]:
+    if len(names) > len(CANDIDATE_COLORS):
+        raise ValueError(f"At most {len(CANDIDATE_COLORS)} candidates per figure, got {len(names)}.")
+    return dict(zip(names, CANDIDATE_COLORS, strict=False))
+
+
+def _step_histograms(ax, values: dict[str, np.ndarray], colors: dict[str, str], log: bool, xlabel: str, title: str):
+    """One outline histogram per candidate, as percent of its cells per bin, on shared bins."""
+    pooled = np.concatenate([v for v in values.values() if len(v)])
+    low, high = np.nanpercentile(pooled, [0.5, 99.5])
+    if log:
+        low = max(low, 1e-3)
+        bins = np.geomspace(low, max(high, low * 1.01), 60)
+    else:
+        bins = np.linspace(low, high if high > low else low + 1, 60)
+    for name, v in values.items():
+        # Percent of cells per bin, not density: with log-spaced bins, density inflates the narrow left bins.
+        weights = np.full(len(v), 100 / max(len(v), 1))
+        ax.hist(v, bins=bins, weights=weights, histtype="step", linewidth=2, color=colors[name], label=name)
+    if log:
+        ax.set_xscale("log")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("% of cells per bin")
+    ax.set_title(title)
+
+
+def _finish(fig, axes):
+    for ax in np.ravel(axes):
+        ax.grid(alpha=0.2)
+        ax.spines[["top", "right"]].set_visible(False)
+    handles, labels = np.ravel(axes)[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=len(labels), frameon=False)
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    return fig
+
+
+def plot_comparison(per_cell: dict[str, pd.DataFrame], pixel_size_um: float, marker: str | None = None):
+    """Four small multiples, one colour per candidate: nuclei per cell, border ratio, cell area in µm²
+    (log axis), and marker mean per cell (log axis) if ``marker`` was evaluated, else solidity."""
     import matplotlib.pyplot as plt
 
     names = list(per_cell)
-    if len(names) > len(CANDIDATE_COLORS):
-        raise ValueError(f"At most {len(CANDIDATE_COLORS)} candidates per figure, got {len(names)}.")
-    colors = dict(zip(names, CANDIDATE_COLORS, strict=False))
+    colors = _colors(names)
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
     ax = axes[0, 0]
     width = 0.8 / len(names)
@@ -211,35 +244,36 @@ def plot_comparison(per_cell: dict[str, pd.DataFrame], marker: str, pixel_size_u
     ax.set_xlabel("nuclei in the cell")
     ax.set_ylabel("% of cells")
     ax.set_title("Nuclei per cell")
-    panels = [
-        (axes[0, 1], "border_ratio", "membrane on outline / inside", "Border ratio (1 = no edge)", False),
-        (axes[1, 0], "marker_mean", f"mean {marker} per cell", f"{marker} per cell", True),
-        (axes[1, 1], "area", "cell area (µm²)", "Cell area", True),
-    ]
-    for ax, column, xlabel, title, log in panels:
-        values = {name: per_cell[name][column].dropna().to_numpy(dtype=float) for name in names}
-        if column == "area":
-            values = {name: v * pixel_size_um**2 for name, v in values.items()}
-        pooled = np.concatenate(list(values.values()))
-        low, high = np.nanpercentile(pooled, [0.5, 99.5])
-        bins = np.geomspace(max(low, 1e-3), high, 60) if log else np.linspace(low, high, 60)
-        for name in names:
-            # Percent of cells per bin, not density: with log-spaced bins, density inflates the narrow left bins.
-            weights = np.full(len(values[name]), 100 / max(len(values[name]), 1))
-            ax.hist(
-                values[name], bins=bins, weights=weights, histtype="step", linewidth=2, color=colors[name], label=name
-            )
-        if log:
-            ax.set_xscale("log")
-        if column == "border_ratio":
-            ax.axvline(1, color="0.5", linewidth=1, linestyle="--")
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel("% of cells per bin")
-        ax.set_title(title)
-    for ax in axes.flat:
-        ax.grid(alpha=0.2)
-        ax.spines[["top", "right"]].set_visible(False)
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=len(names), frameon=False)
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
-    return fig
+
+    def column(col, scale=1.0):
+        return {name: per_cell[name][col].dropna().to_numpy(dtype=float) * scale for name in names}
+
+    border_title = "Border ratio (1 = no edge)"
+    _step_histograms(axes[0, 1], column("border_ratio"), colors, False, "membrane on outline / inside", border_title)
+    axes[0, 1].axvline(1, color="0.5", linewidth=1, linestyle="--")
+    _step_histograms(axes[1, 0], column("area", pixel_size_um**2), colors, True, "cell area (µm²)", "Cell area")
+    if marker is not None:
+        xlabel = f"mean {marker} per cell"
+        _step_histograms(axes[1, 1], column("marker_mean"), colors, True, xlabel, f"{marker} per cell")
+    else:
+        title = "Solidity (low = ragged)"
+        _step_histograms(axes[1, 1], column("solidity"), colors, False, "area / convex hull area", title)
+    return _finish(fig, axes)
+
+
+def plot_intensity_per_cell(sdata, candidates: list[str], channel: str):
+    """Mean, sum and max of ``channel`` per cell (log axes), one colour per candidate, from the
+    ``<candidate>_intensities`` tables. Sum and max matter for markers that cover only part of a
+    cell (e.g. a membrane marker), whose mean is diluted by the cell interior."""
+    import matplotlib.pyplot as plt
+
+    colors = _colors(list(candidates))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
+    for ax, stat in zip(axes, ("mean", "sum", "max"), strict=True):
+        values = {}
+        for name in candidates:
+            table = sdata.tables[f"{name}_intensities"]
+            v = table.to_df()[channel] if stat == "mean" else table.obs[f"{stat}_{channel}"]
+            values[name] = np.asarray(v, dtype=float)
+        _step_histograms(ax, values, colors, True, f"{stat} {channel} per cell", f"{channel}: {stat} per cell")
+    return _finish(fig, axes)
