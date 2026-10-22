@@ -8,13 +8,15 @@ One folder per image and round, ``<root>/round_<NN>/<image>/``:
 - ``annotation.json``: where the image and the starting masks come from, its role (``train`` or ``test``),
   and, after ``finish``, the status, what was changed and how well the starting masks scored.
 
-``load_annotations`` gathers every ``annotation.json`` under a root into one table (one row per image and round).
+``open_gui`` opens the GUI on a folder, ``corrected_masks`` reads its result, and ``load_annotations`` gathers
+every ``annotation.json`` under a root into one table (one row per image and round).
 """
 
 from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from collections.abc import Sequence
 from datetime import date
 from importlib.metadata import version
@@ -101,23 +103,42 @@ def finish(folder: str | Path, complete: bool = True) -> dict:
     """
     folder = Path(folder)
     record = json.loads((folder / "annotation.json").read_text())
-    seg_file = folder / f"{record['image']}_seg.npy"
-    final = load_cellpose_masks(seg_file)
+    final, hand_drawn = corrected_masks(folder)
     start = tifffile.imread(folder / "start_masks.tif")
     record["status"] = "complete" if complete else "partial"
-    record["counts"] = change_counts(start, final, np.load(seg_file, allow_pickle=True).item().get("ismanual"))
+    record["counts"] = change_counts(start, final, hand_drawn)
     result = score(final, start, thresholds=SCORE_THRESHOLDS)
     record["start_score"] = {k: round(v, 4) for k, v in result.items() if "@" in k}
     _write_record(folder, record)
     return record
 
 
-def change_counts(start: np.ndarray, final: np.ndarray, ismanual: np.ndarray | None = None) -> dict:
-    """How the masks changed: cells before and after, unchanged (identical pixels), removed, drawn by hand."""
+def corrected_masks(folder: str | Path) -> tuple[np.ndarray, np.ndarray]:
+    """The masks saved by the GUI in ``folder`` and the IDs of the cells drawn by hand."""
+    folder = Path(folder)
+    seg_file = folder / f"{folder.name}_seg.npy"
+    masks = load_cellpose_masks(seg_file)
+    ismanual = np.load(seg_file, allow_pickle=True).item().get("ismanual")
+    hand_drawn = np.flatnonzero(ismanual) + 1 if ismanual is not None else np.array([], dtype=np.int64)
+    return masks, hand_drawn
+
+
+def open_gui(folder: str | Path) -> subprocess.Popen:
+    """Open the Cellpose GUI on the image of ``folder``, as a separate process (closing it leaves Python running)."""
+    image_file = Path(folder) / f"{Path(folder).name}.tif"
+    code = f"from cellpose.gui import gui; gui.run(image={str(image_file)!r})"
+    return subprocess.Popen([sys.executable, "-c", code])
+
+
+def change_counts(start: np.ndarray, final: np.ndarray, hand_drawn: Sequence[int] | None = None) -> dict:
+    """How the masks changed: cells before and after, unchanged (identical pixels), removed, drawn by hand.
+
+    Without ``hand_drawn`` (the IDs the GUI marks as drawn), every final cell that is not unchanged counts as drawn.
+    """
     matches = match_cells(final, start)
     n_start, n_final = int(len(np.unique(start[start > 0]))), len(matches)
     unchanged = int((matches["iou"] == 1).sum())
-    drawn = int(np.sum(ismanual)) if ismanual is not None else n_final - unchanged
+    drawn = len(hand_drawn) if hand_drawn is not None else n_final - unchanged
     return {
         "cells_start": n_start,
         "cells_final": n_final,

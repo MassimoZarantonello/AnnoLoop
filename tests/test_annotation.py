@@ -11,7 +11,14 @@ import tifffile
 from spatialdata import SpatialData
 from spatialdata.models import Image2DModel, Labels2DModel
 
-from macroseg.annotation import change_counts, export_for_gui, finish, load_annotations, summarize_rounds
+from macroseg.annotation import (
+    change_counts,
+    corrected_masks,
+    export_for_gui,
+    finish,
+    load_annotations,
+    summarize_rounds,
+)
 from macroseg.config import SegmentationStep
 
 
@@ -103,6 +110,16 @@ def test_finish_records_changes_and_start_score(sdata_and_cfg, tmp_path):
     assert record["start_score"]["AP@0.5"] == pytest.approx(0.5)
     assert json.loads((folder / "annotation.json").read_text())["counts"]["drawn"] == 1
     assert finish(folder, complete=False)["status"] == "partial"
+
+
+def test_corrected_masks_returns_the_hand_drawn_ids(sdata_and_cfg, tmp_path):
+    sdata, cfg = sdata_and_cfg
+    folder = export_for_gui(sdata, cfg, "cells", ["DAPI"], tmp_path, round_number=1)
+    masks, hand_drawn = corrected_masks(folder)
+    assert masks.max() == 3 and len(hand_drawn) == 0  # nothing drawn yet
+    _correct_in_gui(folder)
+    masks, hand_drawn = corrected_masks(folder)
+    assert list(hand_drawn) == [3] and (masks[12:20, 20:30] == 3).all()
 
 
 def test_change_counts_without_ismanual():

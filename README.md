@@ -9,33 +9,16 @@ See [docs/design.md](docs/design.md) for goals, workflow and decisions.
 
 ## Where things run
 
-**Everything runs on Mewtwo; the Mac is only a screen for napari.**
-
-| | Mewtwo (`/srv/data/massimoz/macroseg`) | Mac |
-|---|---|---|
-| Edit code, git commit / push | VS Code Remote (`mewtwo-code /srv/data/massimoz/macroseg`) | – |
-| Notebooks, tests, pipeline | yes | – |
-| Data and results | `/srv/data/massimoz/macroseg_runs/<name>.zarr` (+ `<name>.log`) | copies in `data/runs/` |
-| napari, Cellpose GUI | – (no display) | `macroseg-view <name>`, notebook 02 |
-
-Paths differ per machine, so they live in `.env` at the repo root (not in git; copy `.env.example`):
-`MACROSEG_INPUT` (raw images), `MACROSEG_RUNS` (`.zarr` stores), `MACROSEG_ANNOTATIONS` (annotation rounds),
-and on the Mac `MACROSEG_REMOTE_RUNS` / `MACROSEG_REMOTE_ANNOTATIONS` (the same folders on Mewtwo, for rsync).
-Configs use them as `${MACROSEG_RUNS}`, so one config works on both machines (`macroseg.paths`).
+**For now everything runs on the Mac** (notebooks, pipeline on the Mac GPU, Cellpose GUI); data stay in `data/`
+(not in git). Paths live in `.env` at the repo root (not in git; copy `.env.example`): `MACROSEG_INPUT` (raw images,
+read only), `MACROSEG_RUNS` (`.zarr` stores), `MACROSEG_ANNOTATIONS` (annotation rounds). Configs use them as
+`${MACROSEG_RUNS}` (`macroseg.paths`), so moving the data only means editing `.env`.
 
 ```bash
-# on Mewtwo, in the repo
-uv sync --extra imaging --extra dev                                         # environment (once)
+uv sync --extra imaging --extra viewer --extra dev                          # environment (once)
 .venv/bin/python -m macroseg.baseline configs/<experiment>.yaml [--overwrite] # import, segment, measure
 .venv/bin/python -m pytest
-
-# on the Mac (shell function in ~/.zshrc; not available in the Claude app's ! commands)
-macroseg-view                         # list results on Mewtwo
-macroseg-view <name> [--channels DAPI F480]   # mirror <name>.zarr into data/runs and open napari
 ```
-
-Cellpose weights live in `/srv/data/massimoz/.cache/cellpose/models` (`CELLPOSE_LOCAL_MODELS_PATH`,
-set in `~/.profile` and `~/.bashrc` on Mewtwo), not in the shared home.
 
 ## Pipeline (`macroseg.baseline`)
 
@@ -76,13 +59,13 @@ precision and recall at IoU thresholds, and recall on a subset of cells.
 
 ## Notebooks (kernel `.venv`)
 
-| Notebook | Runs on | Does |
-|---|---|---|
-| `01_baseline.ipynb` | Mewtwo | the pipeline step by step, with per-pixel histograms of every channel |
-| `01b_evaluation.ipynb` | Mewtwo | initial check: which segmentation to start from (measures above, cells to inspect in napari) |
-| `02_cellpose_gui.ipynb` | Mac | copies a store, exports the chosen segmentation for the Cellpose GUI, opens it, records the round |
-| `03_accuracy.ipynb` | Mac or Mewtwo | annotation rounds, and every segmentation scored against the corrected masks |
-| `05_spatiato_annotation.ipynb` | Mewtwo | later phase: crops a whole-slide store for annotation in spatiato |
+| Notebook | Does |
+|---|---|
+| `01_baseline.ipynb` | the pipeline step by step, with per-pixel histograms of every channel |
+| `01b_evaluation.ipynb` | initial check: which segmentation to start from (the measures above, cells to inspect) |
+| `02_cellpose_gui.ipynb` | exports the chosen segmentation for the Cellpose GUI, opens it, records the round |
+| `03_accuracy.ipynb` | annotation rounds, and every segmentation scored against the corrected masks |
+| `05_spatiato_annotation.ipynb` | later phase: crops a whole-slide store for annotation in spatiato (written for Mewtwo) |
 
 ## Layout
 
@@ -120,8 +103,5 @@ Load a config with `macroseg.config.load_config(path)`; unknown keys and invalid
 
 ## Next
 
-- Inspect suspicious cells (2+ nuclei, nuclei in no cell) in napari.
-- spatiato for cell selection: work on a separate local copy (`data/spatiato/<name>.zarr`) and back it
-  up to `/srv/data/massimoz/macroseg_annotations/`, because spatiato saves into the store's tables and
-  `macroseg-view` mirrors `data/runs` with `--delete`.
-- A small hand-annotated ground truth (also needed for fine-tuning).
+- A test image (second crop, `ROLE = "test"`), never used for training.
+- Training (notebook 04): fine-tune Cellpose on the `train` rounds; the model then runs as one more segmentation.

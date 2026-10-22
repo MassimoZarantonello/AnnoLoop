@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from macroseg.accuracy import load_cellpose_masks, match_cells, score, score_segmentations
+from macroseg.accuracy import load_cellpose_masks, match_cells, score, score_segmentations, worst_matches
 
 
 def _truth() -> np.ndarray:
@@ -88,3 +88,13 @@ def test_load_cellpose_masks(tmp_path):
     truth = _truth()
     np.save(tmp_path / "img_seg.npy", {"masks": truth, "outlines": truth})
     np.testing.assert_array_equal(load_cellpose_masks(tmp_path / "img_seg.npy"), truth)
+
+
+def test_worst_matches_lists_missed_cells_first_with_centres():
+    truth = _truth()
+    pred = truth.copy()
+    pred[truth == 9] = 0  # missed
+    pred[0:2, 0:10] = 0  # cell 5: IoU 0.8
+    worst = worst_matches(truth, pred, n=2)
+    assert list(worst["truth_ID"]) == [9, 5]
+    assert worst.loc[0, "iou"] == 0 and (worst.loc[0, "y"], worst.loc[0, "x"]) == (4, 30)

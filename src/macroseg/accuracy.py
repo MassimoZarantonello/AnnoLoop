@@ -96,6 +96,15 @@ def score_segmentations(
     return pd.DataFrame.from_dict(rows, orient="index").rename_axis("segmentation")
 
 
+def worst_matches(truth: np.ndarray, pred: np.ndarray, n: int = 15) -> pd.DataFrame:
+    """The ``n`` true cells matched worst by ``pred`` (``iou`` 0 = missed), with their centre ``y``, ``x`` in pixels."""
+    from skimage.measure import regionprops_table
+
+    centres = pd.DataFrame(regionprops_table(truth, properties=("label", "centroid")))
+    centres = centres.rename(columns={"label": "truth_ID", "centroid-0": "y", "centroid-1": "x"}).round().astype(int)
+    return match_cells(truth, pred).merge(centres).sort_values("iou").head(n).reset_index(drop=True)
+
+
 def plot_ap_curve(table: pd.DataFrame, prefix: str = "AP"):
     """``<prefix>@<t>`` against the IoU threshold ``t``, one line per segmentation (rows of a
     ``score_segmentations`` table). ``prefix`` can also be ``recall``, ``precision`` or ``subset_recall``."""
