@@ -19,6 +19,10 @@ build/
 models/
 data/
 
+# Local planning notes
+docs/roadmap.md
+docs/roadmap_semplice.md
+
 # Notebooks outputs / OS
 .ipynb_checkpoints/
 .DS_Store
