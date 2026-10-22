@@ -1,0 +1,51 @@
+# Exp201, SPC331: mouse neuroblastoma, MACSima (from Annelies, 2026-10-19).
+# DAPI, Na/K-ATPase (membrane), F4/80 (macrophages) and three autofluorescence channels
+# (FITC, PE, APC): macrophages are strongly autofluorescent, so these may help segmentation.
+# OME-TIFF, 6 x 7705 x 6272, uint16, 0.17 µm/pixel, 4 pyramid levels (x1, x4, x16, x64).
+# Test image: a 2048 x 2048 crop (~350 µm) of the whole slide, used as if it were a whole image.
+
+name: exp201_test_crop
+target: macrophages
+
+input:
+  path: /srv/data/massimoz/u_csc/private/DATA/MACSima/Exp201_SPC331_261014_AVH_SUBSET_SingleTiff.tif
+  level: 0          # 0 = full resolution, 1 = 4x smaller, ...
+  crop: [2000, 4048, 2000, 4048]   # [y0, y1, x0, x1] in pixels of the chosen level
+  channels:         # file name -> short name (no "/"); unlisted channels are dropped
+    "DAPI C1 (DAPI C1)": DAPI
+    "Na_K_ATPase (APC C2)": NaK_ATPase
+    "F4_80 (APC C4)": F480
+    "FITC (FITC C0)": autofluo_FITC
+    "PE (PE C0)": autofluo_PE
+    "APC (APC C0)": autofluo_APC
+
+zarr: /srv/data/massimoz/macroseg_runs/exp201_test_crop.zarr
+
+image:
+  element: macsima_image
+
+segmentation:
+  # One Cellpose run per entry, in this order. The name is the labels element in the .zarr
+  # (and in napari). Channels: up to 3, by their short names above.
+  # Optional per entry: diameter (pixels; null = no rescaling), model (default cpsam_v2,
+  # or a path to a fine-tuned model).
+  # An entry with `expand: <earlier entry>` and `distance_um` grows that segmentation instead
+  # of running Cellpose (objects stop where they meet).
+  nuclei:
+    channels: [DAPI]
+  nuclei_expanded:        # "DAPI only" cells: nuclei grown by 3 µm (~18 px at 0.17 µm)
+    expand: nuclei
+    distance_um: 3
+  membrane:
+    channels: [NaK_ATPase]
+  membrane_dapi:
+    channels: [NaK_ATPase, DAPI]
+
+# Fine-tuning settings (later phases).
+channels:
+  cellpose: [F480, DAPI]
+  candidate_marker: F480
+
+annotation:
+  shapes_prefix: macrophages_manual
+  class_label: macrophage
