@@ -9,6 +9,7 @@ description = "Fine-tuning Cellpose to segment macrophages in MACSIMA data"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [
+  "python-dotenv>=1.2.4",
   "pyyaml>=6",
 ]
 

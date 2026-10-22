@@ -1975,6 +1975,7 @@ name = "macroseg"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
+    { name = "python-dotenv" },
     { name = "pyyaml" },
 ]
 
@@ -2001,6 +2002,7 @@ requires-dist = [
     { name = "ipykernel", marker = "extra == 'dev'", specifier = ">=6.31.0" },
     { name = "pylibczirw", marker = "extra == 'imaging'", specifier = ">=6.1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "python-dotenv", specifier = ">=1.2.4" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "spatialdata", marker = "extra == 'imaging'", specifier = ">=0.8" },

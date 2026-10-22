@@ -16,9 +16,12 @@ See [docs/design.md](docs/design.md) for goals, workflow and decisions.
 | Edit code, git commit / push | VS Code Remote (`mewtwo-code /srv/data/massimoz/macroseg`) | – |
 | Notebooks, tests, pipeline | yes | – |
 | Data and results | `/srv/data/massimoz/macroseg_runs/<name>.zarr` (+ `<name>.log`) | copies in `data/runs/` |
-| napari | – (no display) | `macroseg-view <name>` |
+| napari, Cellpose GUI | – (no display) | `macroseg-view <name>`, notebook 03b |
 
-Configs hold Mewtwo paths only; input and output paths always come from the config.
+Paths differ per machine, so they live in `.env` at the repo root (not in git; copy `.env.example`):
+`MACROSEG_INPUT` (raw images), `MACROSEG_RUNS` (`.zarr` stores), `MACROSEG_ANNOTATIONS` (annotation rounds),
+and on the Mac `MACROSEG_REMOTE_RUNS` / `MACROSEG_REMOTE_ANNOTATIONS` (the same folders on Mewtwo, for rsync).
+Configs use them as `${MACROSEG_RUNS}`, so one config works on both machines (`macroseg.paths`).
 
 ```bash
 # on Mewtwo, in the repo
@@ -63,12 +66,23 @@ Uses only the channels used to segment (DAPI and the generic membrane marker):
 Optional: marker separation of a population marker (`marker=`), off by default.
 `plot_intensity_per_cell` (mean / sum / max per cell) is descriptive, for the later classification phase.
 
-## Notebooks (run on Mewtwo, kernel `.venv`)
+## Annotation rounds (`macroseg.annotation`, notebook 03b) and ground-truth measures (`macroseg.accuracy`, notebook 04)
 
-| Notebook | Does |
-|---|---|
-| `01_baseline.ipynb` | the pipeline step by step, with per-pixel histograms of every channel |
-| `02_evaluation.ipynb` | per-pixel histograms of DAPI and membrane, the measures above, cells to inspect in napari |
+One folder per image and round, `$MACROSEG_ANNOTATIONS/round_<NN>/<image>/`: the image for the Cellpose GUI
+(3 channels), `<image>_seg.npy` (masks, corrected in the GUI), `start_masks.tif` (masks as exported) and
+`annotation.json` (round, role `train` / `test`, provenance, and after `finish` the status, the changes and
+the score of the starting masks). Measures against the corrected masks: AP (Cellpose's definition),
+precision and recall at IoU thresholds, and recall on a subset of cells.
+
+## Notebooks (kernel `.venv`)
+
+| Notebook | Runs on | Does |
+|---|---|---|
+| `01_baseline.ipynb` | Mewtwo | the pipeline step by step, with per-pixel histograms of every channel |
+| `02_evaluation.ipynb` | Mewtwo | per-pixel histograms of DAPI and membrane, the measures above, cells to inspect in napari |
+| `03_human_annotation.ipynb` | Mewtwo | crops a whole-slide store for annotation in spatiato |
+| `03b_cellpose_gui.ipynb` | Mac | copies a store, exports one segmentation for the Cellpose GUI, opens it, records the round |
+| `04_accuracy.ipynb` | Mac or Mewtwo | annotation rounds, and every segmentation scored against the corrected masks |
 
 ## Layout
 
@@ -76,7 +90,7 @@ Optional: marker separation of a population marker (`marker=`), off by default.
 configs/          one YAML per experiment: input image, channels, segmentations, output .zarr
 docs/             design and (later) annotation guidelines
 notebooks/        step-by-step runs (pipeline, evaluation)
-src/macroseg/     config, ingest, histograms, baseline, evaluate, view
+src/macroseg/     config, paths, ingest, histograms, baseline, evaluate, view, annotation, accuracy
 tests/            tests on synthetic data
 ```
 
@@ -86,12 +100,12 @@ Marker names and channel order are never hard-coded. The parts used by the pipel
 
 ```yaml
 input:
-  path: /srv/data/massimoz/u_csc/private/DATA/MACSima/<file>.tif
+  path: ${MACROSEG_INPUT}/<file>.tif   # ${...}: from .env
   level: 0                  # pyramid level (0 = full resolution)
   crop: null                # [y0, y1, x0, x1] for a quick test; null = whole image
   channels:                 # optional: file name -> short name; omitted = first word of each file name
     "Na_K_ATPase (APC C2)": NaK_ATPase
-zarr: /srv/data/massimoz/macroseg_runs/<name>.zarr
+zarr: ${MACROSEG_RUNS}/<name>.zarr
 image:
   element: macsima_image
 segmentation:               # run in this order; the name is the labels element

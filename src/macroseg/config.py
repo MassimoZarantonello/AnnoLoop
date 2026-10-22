@@ -5,6 +5,7 @@ parameters) lives in a YAML file and is loaded into the frozen dataclasses below
 these objects and never hard-codes marker or channel names.
 
 Unknown keys are rejected so that typos in a config fail loudly instead of being ignored.
+Paths (``input.path``, ``zarr``) may use ``${MACROSEG_...}`` variables from ``.env`` (see ``macroseg.paths``).
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from macroseg import paths
 
 MAX_CELLPOSE_CHANNELS = 3
 
@@ -209,7 +212,7 @@ def parse_config(raw: Any, source: str = "<config>") -> ExperimentConfig:
         config,
         input=_input(root.get("input"), f"{source}: input"),
         segmentation=_segmentation(root.get("segmentation"), f"{source}: segmentation"),
-        zarr=None if root.get("zarr") is None else _str(root["zarr"], f"{source}: zarr"),
+        zarr=None if root.get("zarr") is None else _path(root["zarr"], f"{source}: zarr"),
     )
 
     if config.split.val_fraction + config.split.test_fraction >= 1:
@@ -237,7 +240,7 @@ def _input(value: Any, where: str) -> InputConfig | None:
     if isinstance(level, bool) or not isinstance(level, int) or level < 0:
         raise ConfigError(f"{where}.level: expected a non-negative integer, got {level!r}.")
     return InputConfig(
-        path=_str(section["path"], f"{where}.path"),
+        path=_path(section["path"], f"{where}.path"),
         channels=channels,
         level=level,
         crop=_crop(section.get("crop"), f"{where}.crop"),
@@ -330,6 +333,14 @@ def _str(value: Any, where: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{where}: expected a non-empty string, got {value!r}.")
     return value
+
+
+def _path(value: Any, where: str) -> str:
+    """A string with its ``${MACROSEG_...}`` variables replaced (see ``macroseg.paths``)."""
+    try:
+        return paths.expand(_str(value, where))
+    except KeyError as error:
+        raise ConfigError(f"{where}: {error.args[0]}") from error
 
 
 def _cellpose_channels(value: Any, where: str) -> tuple[str, ...]:

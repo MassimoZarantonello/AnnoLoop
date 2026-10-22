@@ -8,7 +8,7 @@ name: exp201_test_crop
 target: macrophages
 
 input:
-  path: /srv/data/massimoz/u_csc/private/DATA/MACSima/Exp201_SPC331_261014_AVH_SUBSET_SingleTiff.tif
+  path: ${MACROSEG_INPUT}/Exp201_SPC331_261014_AVH_SUBSET_SingleTiff.tif
   level: 0          # 0 = full resolution, 1 = 4x smaller, ...
   crop: [2000, 4048, 2000, 4048]   # [y0, y1, x0, x1] in pixels of the chosen level
   channels:         # file name -> short name (no "/"); unlisted channels are dropped
@@ -19,7 +19,7 @@ input:
     "PE (PE C0)": autofluo_PE
     "APC (APC C0)": autofluo_APC
 
-zarr: /srv/data/massimoz/macroseg_runs/exp201_test_crop.zarr
+zarr: ${MACROSEG_RUNS}/exp201_test_crop.zarr
 
 image:
   element: macsima_image

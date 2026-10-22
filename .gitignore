@@ -19,6 +19,9 @@ build/
 models/
 data/
 
+# Machine-specific paths (see .env.example)
+.env
+
 # Local planning notes
 docs/roadmap.md
 docs/roadmap_semplice.md

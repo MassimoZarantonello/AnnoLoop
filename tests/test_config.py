@@ -85,3 +85,41 @@ def test_invalid_yaml_reports_file(tmp_path):
     bad.write_text("name: [unclosed\n")
     with pytest.raises(ConfigError, match="invalid YAML"):
         load_config(bad)
+
+
+@pytest.fixture
+def env_file(tmp_path, monkeypatch):
+    """A private .env and a private copy of the environment, so tests neither read the machine's own
+    .env nor leave variables behind for other tests."""
+    import os
+
+    from macroseg import paths
+
+    monkeypatch.setattr(paths, "ENV_FILE", tmp_path / ".env")
+    environ = {k: v for k, v in os.environ.items() if not k.startswith("MACROSEG_")}
+    monkeypatch.setattr(os, "environ", environ)
+    return tmp_path / ".env"
+
+
+def test_paths_come_from_env_file(env_file):
+    from macroseg import paths
+
+    env_file.write_text("MACROSEG_RUNS=/data/runs\nMACROSEG_INPUT=raw\n")
+    cfg = parse_config(_with(zarr="${MACROSEG_RUNS}/exp.zarr", input={"path": "${MACROSEG_INPUT}/slide.tif"}))
+    assert cfg.zarr == "/data/runs/exp.zarr"
+    assert cfg.input.path == str(paths.REPO / "raw" / "slide.tif")  # relative values start at the repo root
+
+
+def test_environment_wins_over_env_file(env_file, monkeypatch):
+    env_file.write_text("MACROSEG_RUNS=/from/file\n")
+    monkeypatch.setenv("MACROSEG_RUNS", "/from/environment")
+    assert parse_config(_with(zarr="${MACROSEG_RUNS}/exp.zarr")).zarr == "/from/environment/exp.zarr"
+
+
+def test_missing_path_variable_is_reported(env_file):
+    with pytest.raises(ConfigError, match=r"zarr: MACROSEG_RUNS is not set"):
+        parse_config(_with(zarr="${MACROSEG_RUNS}/exp.zarr"))
+
+
+def test_paths_without_variables_are_kept(env_file):
+    assert parse_config(_with(zarr="/plain/exp.zarr")).zarr == "/plain/exp.zarr"
