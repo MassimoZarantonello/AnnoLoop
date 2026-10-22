@@ -16,7 +16,7 @@ See [docs/design.md](docs/design.md) for goals, workflow and decisions.
 | Edit code, git commit / push | VS Code Remote (`mewtwo-code /srv/data/massimoz/macroseg`) | – |
 | Notebooks, tests, pipeline | yes | – |
 | Data and results | `/srv/data/massimoz/macroseg_runs/<name>.zarr` (+ `<name>.log`) | copies in `data/runs/` |
-| napari, Cellpose GUI | – (no display) | `macroseg-view <name>`, notebook 03b |
+| napari, Cellpose GUI | – (no display) | `macroseg-view <name>`, notebook 02 |
 
 Paths differ per machine, so they live in `.env` at the repo root (not in git; copy `.env.example`):
 `MACROSEG_INPUT` (raw images), `MACROSEG_RUNS` (`.zarr` stores), `MACROSEG_ANNOTATIONS` (annotation rounds),
@@ -53,7 +53,7 @@ set in `~/.profile` and `~/.bashrc` on Mewtwo), not in the shared home.
 
 Exp201 whole slide (6 channels, 7705 × 6272): about 4 minutes on the RTX 4090.
 
-## Evaluation without ground truth (`macroseg.evaluate`, notebook 02)
+## Evaluation without ground truth (`macroseg.evaluate`, notebook 01b)
 
 Uses only the channels used to segment (DAPI and the generic membrane marker):
 
@@ -66,7 +66,7 @@ Uses only the channels used to segment (DAPI and the generic membrane marker):
 Optional: marker separation of a population marker (`marker=`), off by default.
 `plot_intensity_per_cell` (mean / sum / max per cell) is descriptive, for the later classification phase.
 
-## Annotation rounds (`macroseg.annotation`, notebook 03b) and ground-truth measures (`macroseg.accuracy`, notebook 04)
+## Annotation rounds (`macroseg.annotation`, notebook 02) and ground-truth measures (`macroseg.accuracy`, notebook 03)
 
 One folder per image and round, `$MACROSEG_ANNOTATIONS/round_<NN>/<image>/`: the image for the Cellpose GUI
 (3 channels), `<image>_seg.npy` (masks, corrected in the GUI), `start_masks.tif` (masks as exported) and
@@ -79,10 +79,10 @@ precision and recall at IoU thresholds, and recall on a subset of cells.
 | Notebook | Runs on | Does |
 |---|---|---|
 | `01_baseline.ipynb` | Mewtwo | the pipeline step by step, with per-pixel histograms of every channel |
-| `02_evaluation.ipynb` | Mewtwo | per-pixel histograms of DAPI and membrane, the measures above, cells to inspect in napari |
-| `03_human_annotation.ipynb` | Mewtwo | crops a whole-slide store for annotation in spatiato |
-| `03b_cellpose_gui.ipynb` | Mac | copies a store, exports one segmentation for the Cellpose GUI, opens it, records the round |
-| `04_accuracy.ipynb` | Mac or Mewtwo | annotation rounds, and every segmentation scored against the corrected masks |
+| `01b_evaluation.ipynb` | Mewtwo | initial check: which segmentation to start from (measures above, cells to inspect in napari) |
+| `02_cellpose_gui.ipynb` | Mac | copies a store, exports the chosen segmentation for the Cellpose GUI, opens it, records the round |
+| `03_accuracy.ipynb` | Mac or Mewtwo | annotation rounds, and every segmentation scored against the corrected masks |
+| `05_spatiato_annotation.ipynb` | Mewtwo | later phase: crops a whole-slide store for annotation in spatiato |
 
 ## Layout
 
