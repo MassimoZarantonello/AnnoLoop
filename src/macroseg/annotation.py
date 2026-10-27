@@ -1,18 +1,19 @@
-"""Annotation rounds: export an image for correction, then record what the annotator changed.
+"""Annotation rounds: export an ROI for correction, close a round, record what the annotator changed.
 
-One self-contained folder per image, in the AnnoCell layout (``annocell.folder``), corrected in AnnoCell's napari
-tool (``annocell <folder>``, a separate package):
+One self-contained folder per ROI, in the AnnoCell layout (``annocell.folder``), corrected in AnnoCell's napari
+tool (``annocell <folder>``, a separate package). Each annotator has one folder with their rounds and test regions:
+``<root>/<annotator>/round_<NN>/<roi>/`` and ``<root>/<annotator>/test/<roi>/``; one annotator per ROI.
 
-- ``export_round``: a training image, ``<root>/round_<NN>/<image>/``: all channels, the proposed masks of one
-  segmentation and read-only comparison masks of others;
-- ``export_test``: a test patch, ``<root>/test/<patch>/``, drawn from scratch (no masks at all), never used for
-  training; refused within ``margin_px`` of an annotated region of the same slide, and the reverse is enforced
-  by ``macroseg.train``;
+- ``export_round``: a training ROI for one annotator: all channels, the proposed masks of one segmentation and
+  read-only comparison masks of others;
+- ``export_test``: a test region, drawn from scratch (no masks at all), never used for training; refused within
+  ``margin_px`` of an annotated region of the same slide, and the reverse is enforced by ``macroseg.train``;
+- ``close_round``: the round is over (decided by hand): AnnoCell opens its ROIs read-only;
 - ``finish``: compare the corrected masks with the proposed ones and record it in ``annotation.json``;
-- ``load_annotations`` / ``load_test_patches``: every ``annotation.json`` under a root, one row per image.
+- ``load_annotations`` / ``load_test_patches``: every ``annotation.json`` under a root, one row per ROI.
 
-Round 1 was corrected in the Cellpose GUI (``export_for_gui``, ``open_gui``): its masks are in
-``<image>_seg.npy``, which ``corrected_masks`` still reads.
+Which ROIs go into training is ``annocell.folder.is_complete`` (every cell checked), the same function overviews
+(AnnOverview) use.
 """
 
 from __future__ import annotations
@@ -20,32 +21,20 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-import sys
 from collections.abc import Mapping, Sequence
 from datetime import date
-from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import tifffile
 from annocell import folder as af
 from skimage.segmentation import relabel_sequential
 
-from macroseg.accuracy import load_cellpose_masks, match_cells, score
+from macroseg.accuracy import match_cells, score
 
-ROLES = ("train", "test")
 SCORE_THRESHOLDS = (0.5, 0.75)
 TEST = "test"
 MARGIN_PX = 60  # about one cell diameter at 0.17 µm / pixel
-
-
-def image_folder(root: str | Path, round_number: int, name: str) -> Path:
-    return Path(root) / f"round_{round_number:02d}" / name
-
-
-def test_folder(root: str | Path, name: str) -> Path:
-    return Path(root) / TEST / name
 
 
 def export_round(
@@ -54,13 +43,15 @@ def export_round(
     labels: str,
     root: str | Path,
     round_number: int,
+    annotator: str,
     compare: Sequence[str] = (),
     visible_channels: Sequence[str] | None = None,
     colours: Mapping[str, str] | None = None,
     models_root: str | Path | None = None,
     overwrite: bool = False,
 ) -> Path:
-    """Write the folder of training image ``cfg.name`` for round ``round_number`` and return it.
+    """Write the folder of training ROI ``cfg.name`` for ``annotator`` in round ``round_number`` and return it:
+    ``<root>/<annotator>/round_<NN>/<cfg.name>/``.
 
     ``labels``: the proposed segmentation (a labels element of ``sdata``); ``compare``: other labels elements
     shown read-only; one that is a model in ``models_root`` (``<models_root>/<name>/model.json``) is marked as
@@ -68,8 +59,17 @@ def export_round(
     the proposed segmentation). ``colours``: napari colormap per channel (e.g. ``{"F480": "red", "NaK_ATPase":
     "green", "DAPI": "blue"}``); channels without one get red, green, blue in turn. An existing folder is left
     untouched (it may hold corrections) unless ``overwrite``, which also discards the corrections.
+
+    Refused in a closed round, and if the ROI is already given to another annotator in this round (one annotator
+    per ROI: blending several is not built).
     """
-    folder = image_folder(root, round_number, cfg.name)
+    folder = af.round_folder(root, annotator, round_number) / cfg.name
+    same_round = [r for r in af.rois(root) if r.round == round_number]
+    if any(af.is_closed(af.read_record(r.folder)) for r in same_round):
+        raise ValueError(f"Round {round_number} is closed: export into a new round.")
+    others = sorted(r.annotator for r in same_round if r.name == cfg.name and r.annotator != annotator)
+    if others:
+        raise ValueError(f"{cfg.name} is already given to {others} in round {round_number}: one annotator per ROI.")
     if (folder / af.RECORD).exists() and not overwrite:
         return folder
     _clear(folder)
@@ -83,6 +83,7 @@ def export_round(
     for name in compare:
         af.write_masks(folder / af.COMPARE, _masks(sdata, name), f"{name}.tif")
     record = {
+        "annotator": annotator,
         "round": round_number,
         "image": cfg.name,
         "role": "train",
@@ -112,35 +113,38 @@ def export_test(
     cfg,
     region: Sequence[int],
     root: str | Path,
+    annotator: str,
     name: str | None = None,
     visible_channels: Sequence[str] | None = None,
     colours: Mapping[str, str] | None = None,
     margin_px: int = MARGIN_PX,
     overwrite: bool = False,
 ) -> Path:
-    """Write test patch ``region`` (``[y0, y1, x0, x1]`` in pixels of the store) of ``sdata`` to
-    ``<root>/test/<name>/`` and return the folder. The patch is drawn from scratch: no masks are exported.
+    """Write test region ``region`` (``[y0, y1, x0, x1]`` in pixels of the store) of ``sdata`` for ``annotator``
+    (the expert who draws every test region) to ``<root>/<annotator>/test/<name>/`` and return the folder. It is
+    drawn from scratch: no masks are exported.
 
     ``visible_channels`` and ``colours`` as in ``export_round``.
-    Refused if the patch lies within ``margin_px`` of an annotated image or another test patch of the same slide.
+    Refused if the region lies within ``margin_px`` of an annotated ROI or another test region of the same slide.
     ``name`` defaults to ``<cfg.name>_y<y0>_x<x0>`` in slide pixels.
     """
     y0, y1, x0, x1 = (int(v) for v in region)
     # Overlap is checked in slide pixels: stores of different crops of the same slide share them.
     slide_region = _slide_region(sdata, (y1 - y0, x1 - x0), (y0, x0))
     name = name or f"{cfg.name}_y{slide_region[0]}_x{slide_region[2]}"
-    folder = test_folder(root, name)
+    folder = af.test_regions_folder(root, annotator) / name
     if (folder / af.RECORD).exists() and not overwrite:
         return folder
     source, level = sdata.attrs.get("source"), sdata.attrs.get("level")
     others = [r for r in _records(root) if Path(r["_folder"]) != folder]  # every other image and test patch
     near = [r["image"] for r in others if _near(r, source, level, slide_region, margin_px)]
     if near:
-        raise ValueError(f"Test patch {slide_region} is within {margin_px} px of annotated {near} on the same slide.")
+        raise ValueError(f"Test region {slide_region} is within {margin_px} px of annotated {near} on the same slide.")
     _clear(folder)
     image, channels = _image(sdata, cfg.image.element)
     af.write_image(folder, image[:, y0:y1, x0:x1])  # the image only: no start masks, no comparison masks
     record = {
+        "annotator": annotator,
         "image": name,
         "role": TEST,
         "mode": TEST,
@@ -192,84 +196,31 @@ def slide_region(record: dict) -> list[int] | None:
     return None if region is None else [int(v) for v in region]
 
 
-def export_for_gui(
-    sdata,
-    cfg,
-    labels: str,
-    channels: Sequence[str],
-    root: str | Path,
-    round_number: int,
-    role: str = "train",
-    overwrite: bool = False,
-) -> Path:
-    """Write the folder of image ``cfg.name`` for round ``round_number`` and return it.
-
-    ``labels`` is the starting segmentation (a labels element of ``sdata``), ``channels`` the image channels
-    shown in the GUI. An existing folder is left untouched (it may hold corrections) unless ``overwrite``.
-    """
-    if role not in ROLES:
-        raise ValueError(f"role must be one of {ROLES}, got {role!r}.")
-    if len(channels) > 3:
-        raise ValueError(f"The Cellpose GUI shows at most 3 channels, got {list(channels)}.")
-    folder = image_folder(root, round_number, cfg.name)
-    seg_file = folder / f"{cfg.name}_seg.npy"
-    if seg_file.exists() and not overwrite:
-        return folder
-
-    image = sdata.images[cfg.image.element].sel(c=list(channels)).data.compute()
-    masks = relabel_sequential(sdata.labels[labels].data.compute())[0].astype(np.uint32)
-    folder.mkdir(parents=True, exist_ok=True)
-    image_file = folder / f"{cfg.name}.tif"
-    tifffile.imwrite(image_file, image)
-    tifffile.imwrite(folder / "start_masks.tif", masks)
-    _write_seg(seg_file, masks, image_file)
-
-    step = next((s for s in cfg.segmentation or () if s.labels == labels), None)
-    record = {
-        "round": round_number,
-        "image": cfg.name,
-        "role": role,
-        "status": "exported",
-        "exported_on": date.today().isoformat(),
-        "source": sdata.attrs.get("source"),
-        "level": sdata.attrs.get("level"),
-        "crop": sdata.attrs.get("crop"),
-        "pixel_size_um": sdata.attrs.get("pixel_size_um"),
-        "zarr": cfg.zarr,
-        "element": cfg.image.element,
-        "start_segmentation": {
-            "labels": labels,
-            "model": None if step is None or step.expand else step.model,
-            "channels": None if step is None else list(step.channels),
-            "expand": None if step is None else step.expand,
-        },
-        "gui_channels": list(channels),
-        "macroseg_commit": _git_commit(),
-        "cellpose_version": version("cellpose"),
-    }
-    _write_record(folder, record)
-    return folder
+def close_round(root: str | Path, round_number: int) -> list[Path]:
+    """Close round ``round_number`` for every annotator (``closed_on`` in each ROI): AnnoCell then opens its ROIs
+    read-only, and no ROI can be exported into it any more. Unfinished ROIs are closed too and stay out of training
+    (``annocell.folder.is_complete``). Returns the closed folders."""
+    folders = [r.folder for r in af.rois(root) if r.round == round_number]
+    if not folders:
+        raise ValueError(f"No ROI in round {round_number} under {root}.")
+    for folder in folders:
+        af.close(folder)
+    return folders
 
 
-def finish(folder: str | Path, complete: bool | None = None) -> dict:
-    """Compare the corrected masks with the proposed ones and record it in ``annotation.json``.
-
-    ``complete``: the whole image was reviewed, so untouched cells count as correct. Default: for the napari
-    tool, no cell left unreviewed (test patches: always); for the Cellpose GUI (round 1), True. Can be run again
-    after further corrections; it overwrites the previous result.
-    """
+def finish(folder: str | Path) -> dict:
+    """Compare the corrected masks with the proposed ones and record it in ``annotation.json`` (counts and the
+    score of the proposal); ``status``: ``complete`` (``annocell.folder.is_complete``) or ``partial``. Can be run
+    again after further corrections; it overwrites the previous result. Training does not need it."""
     folder = Path(folder)
     record = af.read_record(folder)
-    # A test patch starts empty: before the tool's first save there is nothing to record.
+    # A test region starts empty: before the tool's first save there is nothing to record.
     if af.is_test(record) and not (folder / af.MASKS).exists():
         raise FileNotFoundError(f"{folder}: no cell drawn yet ({af.MASKS} is missing).")
     final, hand_drawn = corrected_masks(folder)
-    if (folder / af.MASKS).exists():  # napari tool (round 1, in the Cellpose GUI, has no review states)
-        review = af.summary(af.read_cells(folder))
-        if complete is None:
-            complete = af.is_test(record) or review[af.UNREVIEWED] == 0
-        record["review"] = {**record.get("review", {}), **review}
-    record["status"] = "complete" if complete is None or complete else "partial"
+    review = af.summary(af.read_cells(folder))
+    record["review"] = {**record.get("review", {}), **review}
+    record["status"] = "complete" if af.is_complete(record) else "partial"
     if af.is_test(record):  # drawn from scratch: nothing to compare with
         record["counts"] = {"cells_final": review["cells"], "macrophages": review["macrophages"]}
     else:
@@ -282,34 +233,18 @@ def finish(folder: str | Path, complete: bool | None = None) -> dict:
 
 
 def corrected_masks(folder: str | Path) -> tuple[np.ndarray, np.ndarray]:
-    """The corrected masks in ``folder`` and the IDs of the cells the annotator drew or edited.
-
-    Reads ``masks.tif`` and ``cells.csv`` (napari tool), else ``<image>_seg.npy`` (Cellpose GUI, round 1:
-    drawn cells only, the GUI cannot edit an outline).
-    """
-    folder = Path(folder)
-    if (folder / af.MASKS).exists():
-        cells = af.read_cells(folder)
-        by_hand = sorted(i for i, c in cells.items() if c.origin in (af.DRAWN, af.EDITED))
-        return af.read_masks(folder), np.array(by_hand, dtype=np.int64)
-    seg_file = folder / f"{folder.name}_seg.npy"
-    masks = load_cellpose_masks(seg_file)
-    ismanual = np.load(seg_file, allow_pickle=True).item().get("ismanual")
-    hand_drawn = np.flatnonzero(ismanual) + 1 if ismanual is not None else np.array([], dtype=np.int64)
-    return masks, hand_drawn
-
-
-def open_gui(folder: str | Path) -> subprocess.Popen:
-    """Open the Cellpose GUI on the image of ``folder``, as a separate process (closing it leaves Python running)."""
-    image_file = Path(folder) / f"{Path(folder).name}.tif"
-    code = f"from cellpose.gui import gui; gui.run(image={str(image_file)!r})"
-    return subprocess.Popen([sys.executable, "-c", code])
+    """The corrected masks in ``folder`` (``masks.tif``, else the proposal) and the IDs of the cells the annotator
+    drew or edited (``cells.csv``)."""
+    cells = af.read_cells(folder)
+    by_hand = sorted(i for i, c in cells.items() if c.origin in (af.DRAWN, af.EDITED))
+    return af.read_masks(folder), np.array(by_hand, dtype=np.int64)
 
 
 def change_counts(start: np.ndarray, final: np.ndarray, hand_drawn: Sequence[int] | None = None) -> dict:
     """How the masks changed: cells before and after, unchanged (identical pixels), removed, drawn by hand.
 
-    Without ``hand_drawn`` (the IDs the GUI marks as drawn), every final cell that is not unchanged counts as drawn.
+    Without ``hand_drawn`` (the IDs of the drawn and edited cells), every final cell that is not unchanged counts
+    as drawn.
     """
     matches = match_cells(final, start)
     n_start, n_final = int(len(np.unique(start[start > 0]))), len(matches)
@@ -326,27 +261,41 @@ def change_counts(start: np.ndarray, final: np.ndarray, hand_drawn: Sequence[int
 
 
 def load_annotations(root: str | Path) -> pd.DataFrame:
-    """One row per image of the rounds under ``root``, nested fields flattened (e.g. ``counts.drawn``)."""
-    records = [json.loads(p.read_text()) for p in sorted(Path(root).glob("round_*/*/annotation.json"))]
+    """One row per training ROI of the rounds under ``root``, nested fields flattened (e.g. ``counts.drawn``), with
+    ``folder``, ``annotator`` and ``round`` from the tree, ``complete`` (``annocell.folder.is_complete``) and
+    ``closed``."""
+    records = [
+        {
+            **(record := af.read_record(r.folder)),
+            "folder": str(r.folder),
+            "annotator": r.annotator,
+            "round": r.round,
+            "complete": af.is_complete(record),
+            "closed": af.is_closed(record),
+        }
+        for r in af.rois(root)
+        if r.round is not None
+    ]
     if not records:
         return pd.DataFrame()
-    return pd.json_normalize(records).sort_values(["round", "image"]).reset_index(drop=True)
+    return pd.json_normalize(records).sort_values(["round", "annotator", "image"]).reset_index(drop=True)
 
 
 def load_test_patches(root: str | Path) -> list[dict]:
-    """The ``annotation.json`` of every test patch under ``root``."""
-    return [json.loads(p.read_text()) for p in sorted((Path(root) / TEST).glob("*/annotation.json"))]
+    """The ``annotation.json`` of every test region under ``root``."""
+    return [af.read_record(r.folder) for r in af.rois(root) if r.round is None]
 
 
 def summarize_rounds(annotations: pd.DataFrame) -> pd.DataFrame:
-    """Per round: images (all, complete, test), cells changed, and the mean score of the starting masks."""
+    """Per round: annotators, ROIs (all, complete: going into training), cells changed (from ``finish``), and the
+    mean score of the starting masks."""
     if annotations.empty:
         return pd.DataFrame()
     done = annotations[annotations["status"] != "exported"]
     per_round = annotations.groupby("round").agg(
-        images=("image", "size"),
-        complete=("status", lambda s: int((s == "complete").sum())),
-        test_images=("role", lambda s: int((s == "test").sum())),
+        annotators=("annotator", "nunique"),
+        rois=("image", "size"),
+        complete=("complete", "sum"),
     )
     if done.empty:
         return per_round
@@ -358,17 +307,6 @@ def summarize_rounds(annotations: pd.DataFrame) -> pd.DataFrame:
         **{f"mean_start_{c.removeprefix('start_score.')}": (c, "mean") for c in score_columns},
     )
     return per_round.join(finished)
-
-
-def _write_seg(seg_file: Path, masks: np.ndarray, image_file: Path) -> None:
-    from cellpose import utils
-
-    outlines = (masks * utils.masks_to_outlines(masks)).astype(np.uint32)
-    np.save(seg_file, {"masks": masks, "outlines": outlines, "filename": str(image_file)})
-
-
-def _write_record(folder: Path, record: dict) -> None:
-    (folder / "annotation.json").write_text(json.dumps(record, indent=2) + "\n")
 
 
 def _image(sdata, element: str) -> tuple[np.ndarray, list[str]]:
@@ -422,9 +360,8 @@ def _near(record: dict, source, level, region: Sequence[int], margin_px: int) ->
 
 
 def _records(root: str | Path) -> list[dict]:
-    """Every ``annotation.json`` under ``root`` (rounds and test patches), with its folder in ``_folder``."""
-    paths = sorted(Path(root).glob("round_*/*/annotation.json")) + sorted((Path(root) / TEST).glob("*/annotation.json"))
-    return [{**json.loads(p.read_text()), "_folder": str(p.parent)} for p in paths]
+    """Every ``annotation.json`` under ``root`` (rounds and test regions), with its folder in ``_folder``."""
+    return [{**af.read_record(r.folder), "_folder": str(r.folder)} for r in af.rois(root)]
 
 
 def _trained_on(models_root: str | Path | None, name: str, image: str) -> bool | None:
