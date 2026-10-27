@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 # Imaging stack. Kept optional so the config and pure-numpy parts install anywhere.
 imaging = [
+  "annocell",  # the folder format of the annotation rounds (AnnoCell, next to this repo); no napari
   "cellpose>=4",
   "harpy-analysis>=0.5",
   "pylibczirw>=6.1.0",
@@ -30,6 +31,9 @@ dev = [
   "pytest>=8",
   "ruff>=0.6",
 ]
+
+[tool.uv.sources]
+annocell = { path = "../AnnoCell", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = [ "src/macroseg" ]

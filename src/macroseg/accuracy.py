@@ -10,6 +10,9 @@ true positive; unmatched segmented cells are false positives, unmatched true cel
 - ``precision`` (TP / segmented cells) and ``recall`` (TP / true cells).
 - ``recall`` on a subset of true cells (e.g. macrophages) with ``truth_ids``.
 
+Ground truth made by correcting one segmentation favours that segmentation: its untouched cells are identical.
+``corrected_region`` and ``score_segmentations(..., region=...)`` score only where the annotator changed something.
+
 All functions take plain numpy arrays: 2D integer labels, 0 = background.
 """
 
@@ -88,12 +91,39 @@ def score_segmentations(
     segmentations: Mapping[str, np.ndarray],
     thresholds: Iterable[float] = DEFAULT_THRESHOLDS,
     truth_ids: Iterable[int] | None = None,
+    region: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """``score`` of each segmentation against the same ground truth, one row per segmentation."""
+    """``score`` of each segmentation against the same ground truth, one row per segmentation.
+
+    ``region`` (optional, boolean): score only the cells, true and segmented, mostly inside it (``in_region``).
+    """
     thresholds = tuple(thresholds)
     truth_ids = None if truth_ids is None else list(truth_ids)
+    if region is not None:
+        truth = in_region(truth, region)
+        segmentations = {name: in_region(labels, region) for name, labels in segmentations.items()}
     rows = {name: score(truth, labels, thresholds, truth_ids) for name, labels in segmentations.items()}
     return pd.DataFrame.from_dict(rows, orient="index").rename_axis("segmentation")
+
+
+def corrected_region(start: np.ndarray, final: np.ndarray) -> np.ndarray:
+    """Pixels the annotator changed: the final cells that are not identical to a starting cell (drawn or
+    modified) and the starting cells that are not identical to a final cell (removed or modified)."""
+    matches = match_cells(final, start)
+    unchanged = matches[matches["iou"] == 1]
+    changed_final = np.isin(final, matches.loc[matches["iou"] < 1, "truth_ID"])
+    changed_start = (start > 0) & ~np.isin(start, unchanged["pred_ID"])
+    return changed_final | changed_start
+
+
+def in_region(labels: np.ndarray, region: np.ndarray, min_fraction: float = 0.5) -> np.ndarray:
+    """``labels`` keeping only the cells with more than ``min_fraction`` of their pixels in ``region``."""
+    _check_labels(labels, region.astype(np.int8))
+    ids, inside = np.unique(labels[region], return_counts=True)
+    all_ids, sizes = np.unique(labels, return_counts=True)
+    fraction = pd.Series(inside, index=ids).reindex(all_ids, fill_value=0) / sizes
+    keep = fraction.index[(fraction > min_fraction) & (fraction.index > 0)]
+    return np.where(np.isin(labels, keep), labels, 0)
 
 
 def worst_matches(truth: np.ndarray, pred: np.ndarray, n: int = 15) -> pd.DataFrame:
@@ -117,13 +147,13 @@ def plot_ap_curve(table: pd.DataFrame, prefix: str = "AP"):
     colors = _colors(list(table.index))
     fig, ax = plt.subplots(figsize=(7, 4.5))
     for name, row in table[columns].iterrows():
-        ax.plot(thresholds, row.to_numpy(), color=colors[name], linewidth=2, marker="o", markersize=5, label=name)
+        ax.plot(thresholds, row.to_numpy(), color=colors[name] ,linewidth=2, marker="o", markersize=5, label=name)
     ax.set_xlabel("IoU threshold")
     ax.set_ylabel(prefix)
     ax.set_ylim(0, 1.02)
     ax.grid(alpha=0.2)
     ax.spines[["top", "right"]].set_visible(False)
-    ax.legend(frameon=False, loc="lower left")
+    ax.legend(frameon=False, loc="best")
     fig.tight_layout()
     return fig
 

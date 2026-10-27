@@ -5,7 +5,15 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from macroseg.accuracy import load_cellpose_masks, match_cells, score, score_segmentations, worst_matches
+from macroseg.accuracy import (
+    corrected_region,
+    in_region,
+    load_cellpose_masks,
+    match_cells,
+    score,
+    score_segmentations,
+    worst_matches,
+)
 
 
 def _truth() -> np.ndarray:
@@ -98,3 +106,35 @@ def test_worst_matches_lists_missed_cells_first_with_centres():
     worst = worst_matches(truth, pred, n=2)
     assert list(worst["truth_ID"]) == [9, 5]
     assert worst.loc[0, "iou"] == 0 and (worst.loc[0, "y"], worst.loc[0, "x"]) == (4, 30)
+
+
+def test_corrected_region_covers_drawn_modified_and_removed_cells():
+    start = _truth()
+    start[15:20, 30:40] = 11  # removed by the annotator
+    final = _truth()
+    final[0:10, 0:20] = 6  # cells 5 and 7 merged into one drawn cell
+    final[15:20, 0:5] = 12  # drawn from scratch
+    region = corrected_region(start, final)
+    expected = np.zeros_like(region)
+    expected[0:10, 0:20] = expected[15:20, 30:40] = expected[15:20, 0:5] = True
+    np.testing.assert_array_equal(region, expected)  # cell 9, untouched, is left out
+
+
+def test_in_region_keeps_cells_mostly_inside():
+    truth = _truth()
+    region = np.zeros(truth.shape, dtype=bool)
+    region[0:10, 0:16] = True  # all of cell 5, 60 % of cell 7, none of cell 9
+    np.testing.assert_array_equal(np.unique(in_region(truth, region)), [0, 5, 7])
+    np.testing.assert_array_equal(np.unique(in_region(truth, region, min_fraction=0.7)), [0, 5])
+
+
+def test_region_scores_only_the_corrected_cells():
+    truth = _truth()
+    pred = truth.copy()
+    pred[truth == 9] = 0  # missed, outside the region
+    pred[15:20, 0:5] = 2  # false cell, inside the region
+    region = np.zeros(truth.shape, dtype=bool)
+    region[0:10, 0:10] = region[15:20, 0:10] = True
+    table = score_segmentations(truth, {"pred": pred}, thresholds=[0.5], region=region)
+    assert table.loc["pred", "true_cells"] == 1 and table.loc["pred", "segmented_cells"] == 2
+    assert table.loc["pred", "AP@0.5"] == pytest.approx(1 / 2)

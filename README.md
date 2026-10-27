@@ -15,8 +15,8 @@ read only), `MACROSEG_RUNS` (`.zarr` stores), `MACROSEG_ANNOTATIONS` (annotation
 `${MACROSEG_RUNS}` (`macroseg.paths`), so moving the data only means editing `.env`.
 
 ```bash
-uv sync --extra imaging --extra viewer --extra dev                          # environment (once)
-.venv/bin/python -m macroseg.baseline configs/<experiment>.yaml [--overwrite] # import, segment, measure
+uv sync --extra imaging --extra viewer --extra dev                             # environment (once)
+.venv/bin/python -m macroseg.baseline configs/<experiment>.yaml [--overwrite]  # import, segment, measure
 .venv/bin/python -m pytest
 ```
 
@@ -49,13 +49,20 @@ Uses only the channels used to segment (DAPI and the generic membrane marker):
 Optional: marker separation of a population marker (`marker=`), off by default.
 `plot_intensity_per_cell` (mean / sum / max per cell) is descriptive, for the later classification phase.
 
-## Annotation rounds (`macroseg.annotation`, notebook 02) and ground-truth measures (`macroseg.accuracy`, notebook 03)
+## Annotation rounds (`macroseg.annotation`) and ground-truth measures (`macroseg.accuracy`, notebook 03)
 
-One folder per image and round, `$MACROSEG_ANNOTATIONS/round_<NN>/<image>/`: the image for the Cellpose GUI
-(3 channels), `<image>_seg.npy` (masks, corrected in the GUI), `start_masks.tif` (masks as exported) and
-`annotation.json` (round, role `train` / `test`, provenance, and after `finish` the status, the changes and
-the score of the starting masks). Measures against the corrected masks: AP (Cellpose's definition),
-precision and recall at IoU thresholds, and recall on a subset of cells.
+One self-contained folder per image, in the layout of [AnnoCell](../AnnoCell), the napari annotation tool, a separate
+package and repository next to this one (`annocell <folder>`; macroseg depends only on its folder format,
+`annocell.folder`, never on napari): `$MACROSEG_ANNOTATIONS/round_<NN>/<image>/` for training images
+(`export_round`), `$MACROSEG_ANNOTATIONS/test/<patch>/` for test patches drawn from scratch (`export_test`, never
+used for training, nor tiles within 60 px of them). Each holds `image.tif` (all channels), `start_masks.tif`,
+`compare/`, `masks.tif` and `cells.csv` (review state and origin of every cell) and `annotation.json` (provenance,
+review, and after `finish` the status, the changes and the score of the starting masks). Round 1 was corrected
+in the Cellpose GUI (`export_for_gui`, notebook 02; masks in `<image>_seg.npy`). Measures against the corrected
+masks: AP (Cellpose's definition), precision and recall at IoU thresholds, and recall on a subset of cells.
+
+The annotator's laptop needs only AnnoCell (see its README), never macroseg. Blending several annotators of the same
+ROI for training: [docs/concurrent_annotations.md](docs/concurrent_annotations.md) (plan, not built).
 
 ## Notebooks (kernel `.venv`)
 

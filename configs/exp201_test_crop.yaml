@@ -40,6 +40,8 @@ segmentation:
     channels: [NaK_ATPase]
   membrane_dapi:
     channels: [NaK_ATPase, DAPI]
+  membrane_dapi_f480:
+    channels: [NaK_ATPase, DAPI, F480]
 
 # Fine-tuning settings (later phases).
 channels:

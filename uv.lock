@@ -199,6 +199,27 @@ wheels = [
 ]
 
 [[package]]
+name = "annocell"
+version = "0.1.0"
+source = { editable = "../AnnoCell" }
+dependencies = [
+    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
+    { name = "tifffile" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "napari", extras = ["pyqt6"], marker = "extra == 'gui'", specifier = ">=0.5" },
+    { name = "numpy" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "scipy", marker = "extra == 'gui'" },
+    { name = "tifffile" },
+]
+provides-extras = ["gui", "dev"]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1986,6 +2007,7 @@ dev = [
     { name = "ruff" },
 ]
 imaging = [
+    { name = "annocell" },
     { name = "cellpose" },
     { name = "harpy-analysis" },
     { name = "pylibczirw" },
@@ -1997,6 +2019,7 @@ viewer = [
 
 [package.metadata]
 requires-dist = [
+    { name = "annocell", marker = "extra == 'imaging'", editable = "../AnnoCell" },
     { name = "cellpose", marker = "extra == 'imaging'", specifier = ">=4" },
     { name = "harpy-analysis", marker = "extra == 'imaging'", specifier = ">=0.5" },
     { name = "ipykernel", marker = "extra == 'dev'", specifier = ">=6.31.0" },
