@@ -14,6 +14,13 @@ See [docs/design.md](docs/design.md) for goals, workflow and decisions.
 read only), `MACROSEG_RUNS` (`.zarr` stores), `MACROSEG_ANNOTATIONS` (annotation rounds). Configs use them as
 `${MACROSEG_RUNS}` (`macroseg.paths`), so moving the data only means editing `.env`.
 
+macroseg takes the annotation folder format from [AnnoCell](https://github.com/MassimoZarantonello/AnnoCell), which
+must be cloned **next to this repository** (same parent folder: `../AnnoCell`):
+
+```bash
+git clone git@github.com:MassimoZarantonello/AnnoCell.git ../AnnoCell   # once, before uv sync
+```
+
 ```bash
 uv sync --extra imaging --extra viewer --extra dev                             # environment (once)
 .venv/bin/python -m macroseg.baseline configs/<experiment>.yaml [--overwrite]  # import, segment, measure
