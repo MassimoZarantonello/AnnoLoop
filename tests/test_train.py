@@ -133,3 +133,29 @@ def test_train_saves_weights_tiles_and_record(annotated, tmp_path, monkeypatch):
     assert record["images"] == [{"round": 1, "annotator": "alice", "image": "img"}]
     with pytest.raises(FileExistsError):
         train_module.train(data, tmp_path / "models", "m1", settings)
+
+
+def test_score_test_regions_writes_one_score_per_model(annotated, tmp_path):
+    root, _ = annotated
+    sdata = read_zarr(tmp_path / "img.zarr")
+    sdata.attrs.update(source="slide.tif", level=0, crop=[5000, 5064, 5000, 5064])  # far from the ROI
+    cfg = SimpleNamespace(name="other", image=SimpleNamespace(element="img"), zarr="x.zarr")
+    folder = export_test(sdata, cfg, [0, 32, 0, 32], root, "carla")
+    with pytest.raises(ValueError, match="No test region"):
+        train_module.score_test_regions(root, "cpsam", "cpsam", 0, ["NaK", "DAPI"], segment=lambda image: image[0])
+    truth = np.zeros((32, 32), dtype=np.uint32)
+    truth[2:10, 2:10], truth[20:28, 20:28] = 1, 2
+    af.save(folder, truth, af.sync_cells({}, truth, np.zeros_like(truth)))
+    seen = []
+
+    def half_right(image):  # finds the first cell only
+        seen.append(image.shape)
+        found = np.zeros(image.shape[1:], dtype=np.uint32)
+        found[2:10, 2:10] = 1
+        return found
+
+    record = train_module.score_test_regions(root, "cpsam", "cpsam", 0, ["NaK", "DAPI"], segment=half_right)
+    assert seen == [(2, 32, 32)]  # the model's channels only
+    [region] = record["regions"]
+    assert region["region"] == folder.name and region["AP@0.5"] == 0.5 and region["annotator"] == "carla"
+    assert [s["model"] for s in af.read_scores(root)] == ["cpsam"]

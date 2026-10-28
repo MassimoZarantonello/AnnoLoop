@@ -11,6 +11,9 @@
    ``<models>/<name>/``: the weights (``<name>``), ``tiles.csv`` (every tile) and ``model.json`` (start model,
    channels, ROIs, settings, losses, versions).
 3. ``apply_model``: segment a store with the fine-tuned model, as one more labels element.
+4. ``score_model`` / ``score_test_regions``: segment every test region with a model and score it against the
+   expert's masks, written to ``<annotations>/scores/<model>.json`` (``annocell.folder.write_score``), where
+   overviews (AnnOverview) plot it round after round.
 
 Tiles matter because Cellpose-SAM trains on one random 256 x 256 patch per image and epoch: a single large image
 would be seen through one small patch per epoch.
@@ -28,10 +31,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from annocell import folder as af
 from skimage.segmentation import relabel_sequential
 
+from macroseg.accuracy import score
 from macroseg.annotation import (
     MARGIN_PX,
+    SCORE_THRESHOLDS,
     _git_commit,
     corrected_masks,
     load_annotations,
@@ -178,6 +184,69 @@ def train(
 
 def load_model_record(folder: str | Path) -> dict:
     return json.loads((Path(folder) / "model.json").read_text())
+
+
+def score_model(root: str | Path, folder: str | Path, **kwargs) -> dict:
+    """``score_test_regions`` of the fine-tuned model in ``folder``: its weights, its channels, and the latest round
+    of the ROIs it was trained on."""
+    record = load_model_record(folder)
+    round_number = max((int(i["round"]) for i in record.get("images", [])), default=0)
+    return score_test_regions(
+        root, str(Path(folder) / record["name"]), record["name"], round_number, record["channels"], **kwargs
+    )
+
+
+def score_test_regions(
+    root: str | Path,
+    model: str,
+    name: str,
+    round_number: int,
+    channels: Sequence[str],
+    thresholds: Sequence[float] = SCORE_THRESHOLDS,
+    segment=None,
+    **model_kwargs,
+) -> dict:
+    """Segment every test region drawn so far under the annotations ``root`` with Cellpose ``model`` (weights, or a
+    pretrained name such as ``"cpsam"`` for the starting model, ``round_number`` 0) on ``channels``, score it
+    against the expert's masks (AP, precision, recall at each IoU threshold), write it to
+    ``<root>/scores/<name>.json`` and return it.
+
+    ``round_number``: the round whose corrections the model was trained on. ``segment``: a function from an image
+    (channels, y, x) to masks, instead of Cellpose (tests); ``model_kwargs`` go to ``CellposeModel``.
+    """
+    if segment is None:
+        from cellpose import models
+
+        net = models.CellposeModel(gpu=True, pretrained_model=model, **model_kwargs)
+
+        def segment(image):
+            return net.eval(image, channel_axis=0)[0]
+
+    regions = []
+    for roi in af.rois(root):
+        if roi.round is not None or not (roi.folder / af.MASKS).exists():  # test regions with cells drawn
+            continue
+        image, names = af.read_image(roi.folder)
+        missing = [c for c in channels if c not in names]
+        if missing:
+            raise ValueError(f"{roi.folder}: no channel {missing} for model {name}.")
+        predicted = np.asarray(segment(image[[names.index(c) for c in channels]]))
+        result = score(af.read_masks(roi.folder), predicted, thresholds)
+        # NaN (nothing to score) is not JSON: written as null.
+        values = {k: (round(float(v), 4) if np.isfinite(v) else None) for k, v in result.items()}
+        regions.append({"region": roi.name, "annotator": roi.annotator, **values})
+    if not regions:
+        raise ValueError(f"No test region with cells drawn under {root}.")
+    record = {
+        "model": name,
+        "round": round_number,
+        "scored_on": date.today().isoformat(),
+        "channels": list(channels),
+        "regions": regions,
+        "macroseg_commit": _git_commit(),
+    }
+    af.write_score(root, record)
+    return record
 
 
 def apply_model(sdata, element: str, folder: str | Path, labels: str | None = None, **model_kwargs):
