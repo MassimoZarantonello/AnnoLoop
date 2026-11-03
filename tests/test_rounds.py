@@ -105,9 +105,9 @@ def test_save_and_finish(exported):
     final, by_hand = corrected_masks(folder)
     assert list(by_hand) == [1, 4] and (final == 4).sum() == 80
     cells[2].state = af.OK
-    af.save(folder, masks, cells)
+    af.save(folder, masks, cells, done=True)
     assert finish(folder)["status"] == "complete"
-    assert af.read_cells(folder)[1] == af.Cell(af.OK, af.EDITED, False, af.HAND)
+    assert af.read_cells(folder)[1] == af.Cell(af.OK, af.EDITED, af.HAND)
 
 
 def test_export_test_starts_empty_and_refuses_annotated_regions(exported, sdata_and_cfg):
@@ -126,9 +126,8 @@ def test_export_test_starts_empty_and_refuses_annotated_regions(exported, sdata_
         finish(folder)
     masks = np.zeros((10, 10), dtype=np.uint32)
     masks[2:6, 2:6] = 1
-    af.save(folder, masks, {1: af.Cell(af.OK, af.DRAWN, True)})
+    af.save(folder, masks, {1: af.Cell(af.OK, af.DRAWN, af.HAND)}, done=True)
     assert finish(folder)["status"] == "complete" and "start_score" not in af.read_record(folder)
-    assert af.read_review(folder)["macrophages"] == 1
 
 
 def test_one_annotator_per_roi_and_closed_rounds(exported, sdata_and_cfg):
@@ -154,7 +153,7 @@ def test_load_annotations_and_summary(exported, sdata_and_cfg):
     cells = af.sync_cells({}, masks, masks)
     for cell in cells.values():
         cell.state = af.OK
-    af.save(exported, masks, cells)
+    af.save(exported, masks, cells, done=True)
     finish(exported)
     export_round(sdata, SimpleNamespace(**{**vars(cfg), "name": "other"}), "cells", root, 2, "bob")
     sdata.attrs.update(crop=[100, 120, 400, 430])

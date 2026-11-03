@@ -27,7 +27,7 @@ def _complete(folder, edited=()):
     cells = af.sync_cells({}, masks, start)
     for cell in cells.values():
         cell.state = af.OK
-    af.save(folder, masks, cells)
+    af.save(folder, masks, cells, done=True)  # Done pressed
 
 
 @pytest.fixture
