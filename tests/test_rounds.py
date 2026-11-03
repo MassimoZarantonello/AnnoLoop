@@ -12,7 +12,6 @@ from spatialdata import SpatialData
 from spatialdata.models import Image2DModel, Labels2DModel
 
 from macroseg.annotation import (
-    change_counts,
     close_round,
     corrected_masks,
     export_round,
@@ -98,16 +97,17 @@ def test_save_and_finish(exported):
     masks[0:2, 0:10] = 0  # cell 1 trimmed
     cells = af.sync_cells({}, masks, af.read_start(folder))
     af.save(folder, masks, cells)
-    assert af.read_record(folder)["review"][af.UNREVIEWED] == 1  # cell 2, untouched
+    review = af.read_review(folder)  # AnnoCell's counts, the one definition
+    assert review[af.UNREVIEWED] == 1 and (review[af.DRAWN], review[af.EDITED], review["deleted"]) == (1, 1, 1)
     record = finish(folder)
-    assert record["status"] == "partial" and record["counts"]["drawn"] == 2  # drawn + edited
+    assert record["status"] == "partial" and "counts" not in record and "review" not in record
     assert 0 < record["start_score"]["AP@0.5"] < 1
     final, by_hand = corrected_masks(folder)
     assert list(by_hand) == [1, 4] and (final == 4).sum() == 80
     cells[2].state = af.OK
     af.save(folder, masks, cells)
     assert finish(folder)["status"] == "complete"
-    assert af.read_cells(folder)[1] == af.Cell(af.OK, af.EDITED, False)
+    assert af.read_cells(folder)[1] == af.Cell(af.OK, af.EDITED, False, af.HAND)
 
 
 def test_export_test_starts_empty_and_refuses_annotated_regions(exported, sdata_and_cfg):
@@ -127,7 +127,8 @@ def test_export_test_starts_empty_and_refuses_annotated_regions(exported, sdata_
     masks = np.zeros((10, 10), dtype=np.uint32)
     masks[2:6, 2:6] = 1
     af.save(folder, masks, {1: af.Cell(af.OK, af.DRAWN, True)})
-    assert finish(folder)["counts"] == {"cells_final": 1, "macrophages": 1}
+    assert finish(folder)["status"] == "complete" and "start_score" not in af.read_record(folder)
+    assert af.read_review(folder)["macrophages"] == 1
 
 
 def test_one_annotator_per_roi_and_closed_rounds(exported, sdata_and_cfg):
@@ -163,21 +164,8 @@ def test_load_annotations_and_summary(exported, sdata_and_cfg):
     assert list(table["status"]) == ["complete", "exported"] and not table["closed"].any()
     summary = summarize_rounds(table)
     assert summary.loc[2, "annotators"] == 2 and summary.loc[2, "rois"] == 2 and summary.loc[2, "complete"] == 1
-    assert summary.loc[2, "cells_removed"] == 1 and "mean_start_AP@0.75" in summary.columns
+    assert summary.loc[2, "cells_deleted"] == 1 and summary.loc[2, "cells_kept"] == 2
+    assert "mean_start_AP@0.75" in summary.columns
     assert [r["annotator"] for r in load_test_patches(root)] == ["carla"]
     assert load_annotations(root / "empty").empty and summarize_rounds(load_annotations(root / "empty")).empty
 
-
-def test_change_counts_without_hand_drawn_ids():
-    start = np.zeros((10, 20), dtype=np.int32)
-    start[:, :10] = 1
-    final = start.copy()
-    final[:, 10:] = 2  # a new cell
-    assert change_counts(start, final) == {
-        "cells_start": 1,
-        "cells_final": 2,
-        "unchanged": 1,
-        "removed": 0,
-        "drawn": 1,
-        "changed_%": 0.0,
-    }

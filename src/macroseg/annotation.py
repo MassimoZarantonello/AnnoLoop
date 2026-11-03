@@ -9,8 +9,13 @@ tool (``annocell <folder>``, a separate package). Each annotator has one folder 
 - ``export_test``: a test region, drawn from scratch (no masks at all), never used for training; refused within
   ``margin_px`` of an annotated region of the same slide, and the reverse is enforced by ``macroseg.train``;
 - ``close_round``: the round is over (decided by hand): AnnoCell opens its ROIs read-only;
-- ``finish``: compare the corrected masks with the proposed ones and record it in ``annotation.json``;
-- ``load_annotations`` / ``load_test_patches``: every ``annotation.json`` under a root, one row per ROI.
+- ``finish``: the status of an ROI and the score of the proposal against the corrections, in ``annotation.json``;
+- ``load_annotations`` / ``load_test_patches``: every ``annotation.json`` under a root, one row per ROI, with the
+  review AnnoCell wrote (``review.json``).
+
+How much of the proposal was kept, edited, deleted and drawn new, and how many cells were OK'd by hand or in bulk,
+is AnnoCell's review (``annocell.folder.read_review``), the one definition of those counts: nothing here recounts
+them.
 
 Which ROIs go into training is ``annocell.folder.is_complete`` (every cell checked), the same function overviews
 (AnnOverview) use.
@@ -30,7 +35,7 @@ import pandas as pd
 from annocell import folder as af
 from skimage.segmentation import relabel_sequential
 
-from macroseg.accuracy import match_cells, score
+from macroseg.accuracy import score
 
 SCORE_THRESHOLDS = (0.5, 0.75)
 TEST = "test"
@@ -209,24 +214,21 @@ def close_round(root: str | Path, round_number: int) -> list[Path]:
 
 
 def finish(folder: str | Path) -> dict:
-    """Compare the corrected masks with the proposed ones and record it in ``annotation.json`` (counts and the
-    score of the proposal); ``status``: ``complete`` (``annocell.folder.is_complete``) or ``partial``. Can be run
-    again after further corrections; it overwrites the previous result. Training does not need it."""
+    """Record in ``annotation.json`` the ``status`` of an ROI, ``complete`` (``annocell.folder.is_complete``) or
+    ``partial``, and, for a training ROI, ``start_score``: the score of the proposal against the corrected masks.
+    Can be run again after further corrections; it overwrites the previous result. Training does not need it.
+
+    The counts of the corrections are AnnoCell's review (``review.json``), not recomputed here; only
+    ``annotation.json`` is written, so AnnoCell's files are never touched."""
     folder = Path(folder)
     record = af.read_record(folder)
     # A test region starts empty: before the tool's first save there is nothing to record.
     if af.is_test(record) and not (folder / af.MASKS).exists():
         raise FileNotFoundError(f"{folder}: no cell drawn yet ({af.MASKS} is missing).")
-    final, hand_drawn = corrected_masks(folder)
-    review = af.summary(af.read_cells(folder))
-    record["review"] = {**record.get("review", {}), **review}
-    record["status"] = "complete" if af.is_complete(record) else "partial"
-    if af.is_test(record):  # drawn from scratch: nothing to compare with
-        record["counts"] = {"cells_final": review["cells"], "macrophages": review["macrophages"]}
-    else:
+    record["status"] = "complete" if af.is_complete(af.read_review(folder)) else "partial"
+    if not af.is_test(record):  # a test region is drawn from scratch: no proposal to score
         start = af.read_start(folder)
-        record["counts"] = change_counts(start, final, hand_drawn)
-        result = score(final, start, thresholds=SCORE_THRESHOLDS)
+        result = score(af.read_masks(folder), start, thresholds=SCORE_THRESHOLDS)
         record["start_score"] = {k: round(v, 4) for k, v in result.items() if "@" in k}
     af.write_record(folder, record)
     return record
@@ -240,37 +242,18 @@ def corrected_masks(folder: str | Path) -> tuple[np.ndarray, np.ndarray]:
     return af.read_masks(folder), np.array(by_hand, dtype=np.int64)
 
 
-def change_counts(start: np.ndarray, final: np.ndarray, hand_drawn: Sequence[int] | None = None) -> dict:
-    """How the masks changed: cells before and after, unchanged (identical pixels), removed, drawn by hand.
-
-    Without ``hand_drawn`` (the IDs of the drawn and edited cells), every final cell that is not unchanged counts
-    as drawn.
-    """
-    matches = match_cells(final, start)
-    n_start, n_final = int(len(np.unique(start[start > 0]))), len(matches)
-    unchanged = int((matches["iou"] == 1).sum())
-    drawn = len(hand_drawn) if hand_drawn is not None else n_final - unchanged
-    return {
-        "cells_start": n_start,
-        "cells_final": n_final,
-        "unchanged": unchanged,
-        "removed": n_start - unchanged,
-        "drawn": drawn,
-        "changed_%": round(100 * (1 - unchanged / n_start), 2) if n_start else 0.0,
-    }
-
-
 def load_annotations(root: str | Path) -> pd.DataFrame:
-    """One row per training ROI of the rounds under ``root``, nested fields flattened (e.g. ``counts.drawn``), with
-    ``folder``, ``annotator`` and ``round`` from the tree, ``complete`` (``annocell.folder.is_complete``) and
-    ``closed``."""
+    """One row per training ROI of the rounds under ``root``, nested fields flattened (e.g. ``review.drawn``): its
+    ``annotation.json``, AnnoCell's ``review`` (``annocell.folder.read_review``; empty if never saved), ``folder``,
+    ``annotator`` and ``round`` from the tree, ``complete`` (``annocell.folder.is_complete``) and ``closed``."""
     records = [
         {
             **(record := af.read_record(r.folder)),
+            "review": (review := af.read_review(r.folder)),
             "folder": str(r.folder),
             "annotator": r.annotator,
             "round": r.round,
-            "complete": af.is_complete(record),
+            "complete": af.is_complete(review),
             "closed": af.is_closed(record),
         }
         for r in af.rois(root)
@@ -287,26 +270,28 @@ def load_test_patches(root: str | Path) -> list[dict]:
 
 
 def summarize_rounds(annotations: pd.DataFrame) -> pd.DataFrame:
-    """Per round: annotators, ROIs (all, complete: going into training), cells changed (from ``finish``), and the
-    mean score of the starting masks."""
+    """Per round: annotators, ROIs (all, complete: going into training), the corrections in the ROIs AnnoCell saved
+    (its review: cells kept as proposed, edited, deleted, drawn new, OK'd by hand and in bulk), and the mean score
+    of the starting masks (from ``finish``)."""
     if annotations.empty:
         return pd.DataFrame()
-    done = annotations[annotations["status"] != "exported"]
     per_round = annotations.groupby("round").agg(
         annotators=("annotator", "nunique"),
         rois=("image", "size"),
         complete=("complete", "sum"),
     )
-    if done.empty:
-        return per_round
+    saved = annotations[annotations["review.saved_at"].notna()] if "review.saved_at" in annotations else []
+    if len(saved):
+        counts = {"kept": af.PROPOSED, "edited": af.EDITED, "deleted": "deleted", "drawn": af.DRAWN}
+        counts |= {"ok_hand": "ok_hand", "ok_bulk": "ok_bulk"}
+        present = {k: f"review.{c}" for k, c in counts.items() if f"review.{c}" in saved.columns}
+        per_round = per_round.join(saved.groupby("round").agg(**{f"cells_{k}": (c, "sum") for k, c in present.items()}))
+    done = annotations[annotations["status"] != "exported"]
     score_columns = [c for c in done.columns if c.startswith("start_score.AP@")]
-    finished = done.groupby("round").agg(
-        cells_drawn=("counts.drawn", "sum"),
-        cells_removed=("counts.removed", "sum"),
-        mean_changed_pct=("counts.changed_%", "mean"),
-        **{f"mean_start_{c.removeprefix('start_score.')}": (c, "mean") for c in score_columns},
-    )
-    return per_round.join(finished)
+    if score_columns and not done.empty:
+        scores = {f"mean_start_{c.removeprefix('start_score.')}": (c, "mean") for c in score_columns}
+        per_round = per_round.join(done.groupby("round").agg(**scores))
+    return per_round
 
 
 def _image(sdata, element: str) -> tuple[np.ndarray, list[str]]:
@@ -374,7 +359,7 @@ def _trained_on(models_root: str | Path | None, name: str, image: str) -> bool |
 
 def _clear(folder: Path) -> None:
     """Remove what an earlier export and the annotator wrote in ``folder``."""
-    for name in (af.MASKS, af.CELLS, af.START, af.IMAGE):
+    for name in (af.MASKS, af.CELLS, af.REVIEW, af.START, af.IMAGE):
         (folder / name).unlink(missing_ok=True)
     shutil.rmtree(folder / af.COMPARE, ignore_errors=True)
 
