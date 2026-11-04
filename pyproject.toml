@@ -3,9 +3,9 @@ build-backend = "hatchling.build"
 requires = [ "hatchling" ]
 
 [project]
-name = "macroseg"
+name = "annoloop"
 version = "0.0.1"
-description = "Fine-tuning Cellpose to segment macrophages in MACSIMA data"
+description = "The annotation loop: prepare rounds for AnnoCell, collect corrections, fine-tune Cellpose"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-annoloop = "macroseg.loop:main"
+annoloop = "annoloop.loop:main"
 
 [project.optional-dependencies]
 # Imaging stack. Kept optional so the config and pure-numpy parts install anywhere.
@@ -24,10 +24,6 @@ imaging = [
   "harpy-analysis>=0.5",
   "pylibczirw>=6.1.0",
   "spatialdata>=0.8",
-]
-# Annotation UI (napari + spatiato), to test the annotation workflow locally.
-viewer = [
-  "spatiato>=0.2.1",
 ]
 dev = [
   "ipykernel>=6.31.0",
@@ -39,7 +35,7 @@ dev = [
 annocell = { path = "../AnnoCell", editable = true }
 
 [tool.hatch.build.targets.wheel]
-packages = [ "src/macroseg" ]
+packages = [ "src/annoloop" ]
 
 [tool.pytest.ini_options]
 testpaths = [ "tests" ]

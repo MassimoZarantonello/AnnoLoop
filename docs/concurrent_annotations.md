@@ -5,24 +5,24 @@ Status: plan agreed, not built. The points under *To decide* (thresholds, blanke
 
 ## Setting
 
-- Several annotators annotate **every ROI**, **independently**, all starting from **the same proposal**: the same
+- Several annotators annotate **every image**, **independently**, all starting from **the same proposal**: the same
   segmentation by the model (the same `start_masks.tif`). Every cell starts unreviewed (yellow); an annotator's image
   takes part only when it is **complete** (no unreviewed cell left): every cell of it is a decision, never an
   abstention.
-- There is no adjudicator: the annotations are **blended automatically** into one mask per ROI, because Cellpose
+- There is no adjudicator: the annotations are **blended automatically** into one mask per image, because Cellpose
   trains on exactly one instance mask per image and has no "ignore" label.
 - The same blending gives the agreement between annotators (the noise ceiling: model differences smaller than it are
   not real).
 
 ## Where it lives
 
-Only in the **training code** (`macroseg.train`, when the training set is built). The annotation tool and the round
+Only in the **training code** (`annoloop.train`, when the training set is built). The annotation tool and the round
 folders do not change: each annotator's folder holds only that annotator's decisions, nobody sees a consensus, and no
 consensus mask is written next to the annotations. The blending is computed when training starts, from the
-annotators' complete folders, and recorded with the model (in `model.json`: annotators per ROI, kept / dropped /
+annotators' complete folders, and recorded with the model (in `model.json`: annotators per image, kept / dropped /
 disputed groups, blanked fraction), so the training set can be rebuilt exactly.
 
-The same blending function is also needed to **score models on a test ROI annotated by several annotators** (the
+The same blending function is also needed to **score models on a test image annotated by several annotators** (the
 consensus is the ground truth there, with disputed areas left out); scoring calls it from the training code rather
 than having its own copy.
 
@@ -68,7 +68,7 @@ the consensus then gets its own new numbers.
 - Disputed areas are **blanked**: background in the mask *and* in the image, filled per channel with the median of
   the image's background pixels, grown by ~2 px so no membrane fragment is left; except pixels a kept cell covers. A
   training tile where blanking covers more than ~5 % is dropped instead.
-- On the test ROI, disputed areas are left out of the score on both sides, not blanked.
+- On the test image, disputed areas are left out of the score on both sides, not blanked.
 
 ## Two examples
 
@@ -138,15 +138,15 @@ An odd number, 3 or more, avoids ties.
 Per pair of annotators, only where at least one of them changed something (elsewhere they agree by construction, from
 the shared proposal): AP@0.5 (do they agree on which cells exist, splits and merges included) and the mean Dice of
 the matched cells (how close the outlines are). Per annotator: agreement with the consensus of the *others* (leave
-one out), to spot an annotator who reads the guidelines differently. Per ROI: the number of kept, dropped and
+one out), to spot an annotator who reads the guidelines differently. Per image: the number of kept, dropped and
 disputed groups.
 
-The consensus inherits the proposal's bias (everyone was anchored to it): the test ROI drawn from scratch, by several
+The consensus inherits the proposal's bias (everyone was anchored to it): the test image drawn from scratch, by several
 annotators and blended the same way, stays essential.
 
 ## Decided
 
-- **At least 2 annotators per ROI**, the minimum for which the method works; 3 or more (odd) when possible, for a real
+- **At least 2 annotators per image**, the minimum for which the method works; 3 or more (odd) when possible, for a real
   majority.
 - **No uncertain state**: the annotator toggles OK with `O` (green / back to yellow), deletes, draws. A cell they are
   unsure about must still be decided (OK or deleted): the image counts only when every cell is OK. Blanking is only

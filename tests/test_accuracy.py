@@ -5,15 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from macroseg.accuracy import (
-    corrected_region,
-    in_region,
-    load_cellpose_masks,
-    match_cells,
-    score,
-    score_segmentations,
-    worst_matches,
-)
+from annoloop.accuracy import match_cells, score
 
 
 def _truth() -> np.ndarray:
@@ -55,16 +47,6 @@ def test_outline_precision_depends_on_threshold():
     assert result["recall@0.9"] == pytest.approx(2 / 3)
 
 
-def test_subset_recall_counts_only_the_given_true_cells():
-    truth = _truth()
-    pred = truth.copy()
-    pred[truth == 9] = 0
-    result = score(truth, pred, thresholds=[0.5], truth_ids=[7, 9])
-    assert result["subset_cells"] == 2
-    assert result["subset_recall@0.5"] == pytest.approx(0.5)
-    assert result["recall@0.5"] == pytest.approx(2 / 3)
-
-
 def test_missed_cell_has_no_partner_even_when_other_cells_are_left():
     truth = _truth()
     pred = np.zeros_like(truth)
@@ -75,13 +57,10 @@ def test_missed_cell_has_no_partner_even_when_other_cells_are_left():
     assert (matches.loc[[7, 9], "pred_ID"] == 0).all()
 
 
-def test_empty_segmentation_and_table():
+def test_empty_segmentation():
     truth = _truth()
     result = score(truth, np.zeros_like(truth), thresholds=[0.5])
-    assert result["recall@0.5"] == 0 and np.isnan(result["precision@0.5"])
-    table = score_segmentations(truth, {"same": truth, "empty": np.zeros_like(truth)}, thresholds=[0.5])
-    assert list(table.index) == ["same", "empty"]
-    assert table.loc["same", "AP@0.5"] == pytest.approx(1.0)
+    assert result["recall@0.5"] == 0 and np.isnan(result["precision@0.5"]) and result["segmented_cells"] == 0
 
 
 def test_rejects_misaligned_or_float_labels():
@@ -90,51 +69,3 @@ def test_rejects_misaligned_or_float_labels():
         score(truth, truth[:10])
     with pytest.raises(ValueError, match="integers"):
         score(truth, truth.astype(float))
-
-
-def test_load_cellpose_masks(tmp_path):
-    truth = _truth()
-    np.save(tmp_path / "img_seg.npy", {"masks": truth, "outlines": truth})
-    np.testing.assert_array_equal(load_cellpose_masks(tmp_path / "img_seg.npy"), truth)
-
-
-def test_worst_matches_lists_missed_cells_first_with_centres():
-    truth = _truth()
-    pred = truth.copy()
-    pred[truth == 9] = 0  # missed
-    pred[0:2, 0:10] = 0  # cell 5: IoU 0.8
-    worst = worst_matches(truth, pred, n=2)
-    assert list(worst["truth_ID"]) == [9, 5]
-    assert worst.loc[0, "iou"] == 0 and (worst.loc[0, "y"], worst.loc[0, "x"]) == (4, 30)
-
-
-def test_corrected_region_covers_drawn_modified_and_removed_cells():
-    start = _truth()
-    start[15:20, 30:40] = 11  # removed by the annotator
-    final = _truth()
-    final[0:10, 0:20] = 6  # cells 5 and 7 merged into one drawn cell
-    final[15:20, 0:5] = 12  # drawn from scratch
-    region = corrected_region(start, final)
-    expected = np.zeros_like(region)
-    expected[0:10, 0:20] = expected[15:20, 30:40] = expected[15:20, 0:5] = True
-    np.testing.assert_array_equal(region, expected)  # cell 9, untouched, is left out
-
-
-def test_in_region_keeps_cells_mostly_inside():
-    truth = _truth()
-    region = np.zeros(truth.shape, dtype=bool)
-    region[0:10, 0:16] = True  # all of cell 5, 60 % of cell 7, none of cell 9
-    np.testing.assert_array_equal(np.unique(in_region(truth, region)), [0, 5, 7])
-    np.testing.assert_array_equal(np.unique(in_region(truth, region, min_fraction=0.7)), [0, 5])
-
-
-def test_region_scores_only_the_corrected_cells():
-    truth = _truth()
-    pred = truth.copy()
-    pred[truth == 9] = 0  # missed, outside the region
-    pred[15:20, 0:5] = 2  # false cell, inside the region
-    region = np.zeros(truth.shape, dtype=bool)
-    region[0:10, 0:10] = region[15:20, 0:10] = True
-    table = score_segmentations(truth, {"pred": pred}, thresholds=[0.5], region=region)
-    assert table.loc["pred", "true_cells"] == 1 and table.loc["pred", "segmented_cells"] == 2
-    assert table.loc["pred", "AP@0.5"] == pytest.approx(1 / 2)

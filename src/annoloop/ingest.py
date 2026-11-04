@@ -1,6 +1,6 @@
 """Read a raw image (OME-TIFF or CZI) into a SpatialData object.
 
-Channels are renamed to the short names of the config, so the rest of the pipeline never sees
+Channels are renamed to the short names of the global settings, so the rest of the pipeline never sees
 file-specific channel names. Coordinates stay in pixels (the ``global`` coordinate system);
 the physical pixel size is kept in ``sdata.attrs["pixel_size_um"]``.
 """
@@ -16,35 +16,43 @@ import numpy as np
 from spatialdata import SpatialData
 from spatialdata.models import Image2DModel
 
-from macroseg.config import InputConfig
-
 CHUNK_PX = 2048
 
 
-def ingest(cfg: InputConfig, element: str) -> SpatialData:
-    """Read ``cfg.path`` as image element ``element``."""
-    path = Path(cfg.path)
+def ingest(
+    path: str | Path,
+    element: str,
+    channels: Mapping[str, str] | None = None,
+    level: int = 0,
+    crop: tuple[int, int, int, int] | None = None,
+) -> SpatialData:
+    """Read ``path`` (OME-TIFF, lazily, or CZI) as image element ``element``.
+
+    ``channels``: file channel name -> short name; unlisted channels are dropped (None: every channel, named by the
+    first word of its file name). ``level``: pyramid level (0 = full resolution). ``crop``: ``(y0, y1, x0, x1)`` in
+    pixels of that level, None for the whole image."""
+    path = Path(path)
     suffix = path.suffix.lower()
     if suffix in (".tif", ".tiff"):
-        image, names, pixel_size = _read_ome_tiff(path, cfg.level)
+        image, names, pixel_size = _read_ome_tiff(path, level)
     elif suffix == ".czi":
         image, names, pixel_size = _read_czi(path)
     else:
         raise ValueError(f"{path}: unsupported format {suffix!r}; expected .tif, .tiff or .czi.")
 
-    if cfg.crop is not None:
-        y0, y1, x0, x1 = cfg.crop
+    if crop is not None:
+        y0, y1, x0, x1 = crop
         if y1 > image.shape[1] or x1 > image.shape[2]:
-            raise ValueError(f"Crop {cfg.crop} exceeds the image size {image.shape[1:]} at level {cfg.level}.")
+            raise ValueError(f"Crop {crop} exceeds the image size {image.shape[1:]} at level {level}.")
         image = image[:, y0:y1, x0:x1]
 
-    image, names = _select_channels(image, names, cfg.channels)
+    image, names = _select_channels(image, names, channels)
     image = Image2DModel.parse(image.rechunk((1, CHUNK_PX, CHUNK_PX)), dims=("c", "y", "x"), c_coords=names)
     sdata = SpatialData(images={element: image})
     sdata.attrs.update(
         source=str(path),
-        level=cfg.level,
-        crop=list(cfg.crop) if cfg.crop else None,
+        level=level,
+        crop=list(crop) if crop else None,
         pixel_size_um=pixel_size,
     )
     return sdata
@@ -72,7 +80,7 @@ def short_names(names: list[str]) -> list[str]:
     if duplicates:
         raise ValueError(
             f"Channels {names} give duplicate short names {duplicates}; "
-            "map them explicitly under input.channels in the config."
+            "map them explicitly under channels in the global settings."
         )
     return short
 

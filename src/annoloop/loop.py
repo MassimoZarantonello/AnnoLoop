@@ -1,19 +1,19 @@
 """The steps of the annotation loop as commands, for a cluster job or a terminal (AnnoLoop.md, "One round").
 
-Every command takes the global settings file, and the round file when it acts on a round (``macroseg.settings``),
+Every command takes the global settings file, and the round file when it acts on a round (``annoloop.settings``),
 asks nothing, logs what it does, and can be run again: what is done is skipped, and what would be unsafe is refused
 before any GPU work.
 
 - ``prepare``: for each image of the round: ingest the raw file into ``<runs>/<image>.zarr`` (once), run the
   segmentation that proposes the masks (the starting one, or the round's fine-tuned model; once per store), and
-  export one AnnoCell folder per annotator (``macroseg.annotation.export_round``; a folder that exists is kept,
+  export one AnnoCell folder per annotator (``annoloop.annotation.export_round``; a folder that exists is kept,
   with its corrections). ``--dry-run`` only says what would be done.
-- ``close``: close the round for every annotator (``macroseg.annotation.close_round``).
-- ``train``: fine-tune on the complete images of the round (``macroseg.train``), saved as ``<models>/model_r<NN>``,
+- ``close``: close the round for every annotator (``annoloop.annotation.close_round``).
+- ``train``: fine-tune on the complete images of the round (``annoloop.train``), saved as ``<models>/model_r<NN>``,
   the name a later round file gives as its ``model``. By default from the starting model (``start.model``) on every
   round so far (AnnoLoop.md, D14); with ``--from <model>``, sequentially: that model, continued on this round's
   images only (``model_r<NN>_seq``). A model that exists is not trained again.
-- ``score``: score a model (``--model <name>``) or the starting model (``--start``) on the test regions, written to
+- ``score``: score a model (``--model <name>``) or the starting model (``--start``) on the test images, written to
   ``<annotations>/scores/<model>.json``.
 - ``stats``: the corrections per round (``--by-annotator``: per round and annotator), from AnnoCell's reviews.
 
@@ -33,59 +33,38 @@ import logging
 import shutil
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 
-from macroseg.config import ImageConfig, InputConfig, SegmentationStep
-from macroseg.settings import GlobalSettings, RoundImage, RoundSettings, load_round, load_settings
+from annoloop.segmentation import Segmentation, from_model
+from annoloop.settings import GlobalSettings, RoundImage, RoundSettings, load_round, load_settings
 
 log = logging.getLogger("annoloop")
 
 
-@dataclass(frozen=True)
-class _ExportConfig:
-    """What ``export_round`` reads from an experiment config, for one image of a round."""
-
-    name: str
-    zarr: str
-    image: ImageConfig
-    segmentation: tuple[SegmentationStep, ...]
-
-
-def proposal(settings: GlobalSettings, round_settings: RoundSettings) -> SegmentationStep:
+def proposal(settings: GlobalSettings, round_settings: RoundSettings) -> Segmentation:
     """The segmentation that proposes the masks of the round: the starting one (``start``), or the round's
-    fine-tuned ``model`` (its weights and its channels, from ``<models>/<model>/model.json``), whose labels element
-    is named after it."""
-    start = settings.start
+    fine-tuned ``model`` (``annoloop.segmentation.from_model``)."""
     if round_settings.model is None:
-        return SegmentationStep(
-            labels=start.labels, channels=start.channels, model=start.model, diameter=start.diameter
-        )
-    from macroseg.train import load_model_record
-
+        return settings.start
     folder = Path(settings.paths.models) / round_settings.model
     if not (folder / "model.json").exists():
         raise FileNotFoundError(f"{round_settings.source}: model {round_settings.model!r}: no {folder}/model.json.")
-    record = load_model_record(folder)
-    return SegmentationStep(
-        labels=round_settings.model,
-        channels=tuple(record["channels"]),
-        model=str(folder / record["name"]),
-        diameter=start.diameter,
-    )
+    return from_model(folder, diameter=settings.start.diameter)
 
 
 def store_path(settings: GlobalSettings, image: RoundImage) -> Path:
     return Path(settings.paths.runs) / f"{image.name}.zarr"
 
 
-def check_round(settings: GlobalSettings, round_settings: RoundSettings) -> SegmentationStep:
+def check_round(settings: GlobalSettings, round_settings: RoundSettings) -> Segmentation:
     """Everything that can be checked before any work: returns the proposing segmentation, or raises.
 
     Refused: a closed round; a shared image (several annotators; AnnoLoop.md, O1); an image already given to
-    another annotator in this round; a missing raw file (unless its store exists); a missing model; a segmentation
-    on channels that are not defined."""
+    another annotator in this round, or given in another round (each image is annotated once, D17); a missing raw
+    file (unless its store exists); a missing model; a segmentation on channels that are not defined."""
     from annocell import folder as af
+
+    from annoloop.annotation import given_in_other_rounds
 
     step = proposal(settings, round_settings)
     short = list(settings.channels.values())
@@ -94,7 +73,7 @@ def check_round(settings: GlobalSettings, round_settings: RoundSettings) -> Segm
         raise ValueError(f"{step.labels}: channels {missing} are not among the channels {short} of {settings.source}.")
 
     problems = []
-    existing = [r for r in af.rois(settings.paths.annotations) if r.round == round_settings.round]
+    existing = [r for r in af.images(settings.paths.annotations) if r.round == round_settings.round]
     if any(af.is_closed(af.read_record(r.folder)) for r in existing):
         problems.append(f"round {round_settings.round} is closed: write a new round file")
     for image in round_settings.images:
@@ -103,6 +82,9 @@ def check_round(settings: GlobalSettings, round_settings: RoundSettings) -> Segm
         others = sorted(r.annotator for r in existing if r.name == image.name and r.annotator not in image.annotators)
         if others:
             problems.append(f"{image.name} is already given to {others} in round {round_settings.round}")
+        before = given_in_other_rounds(settings.paths.annotations, image.name, round_settings.round)
+        if before:
+            problems.append(f"{image.name} was already given in {before}: each image is annotated once")
         if not store_path(settings, image).exists() and not Path(image.path).is_file():
             problems.append(f"{image.name}: no raw file {image.path}")
     if problems:
@@ -146,16 +128,15 @@ def prepare_round(
             continue
         sdata = _store(settings, image)
         sdata = _segmentation(sdata, settings, image, step, model, **model_kwargs)
-        cfg = _ExportConfig(image.name, str(store), ImageConfig(element=settings.element), (step,))
         for annotator in image.annotators:
-            folder = _export(sdata, cfg, settings, round_settings, step, annotator)
+            folder = _export(sdata, image, settings, round_settings, step, annotator)
             log.info("%s: %s %s", image.name, "kept" if existed[annotator] else "exported", folder)
             folders.append(folder)
     return folders
 
 
 def close(settings: GlobalSettings, round_settings: RoundSettings) -> list[Path]:
-    from macroseg.annotation import close_round
+    from annoloop.annotation import close_round
 
     folders = close_round(settings.paths.annotations, round_settings.round)
     log.info("Round %d closed: %d image folder(s).", round_settings.round, len(folders))
@@ -181,7 +162,7 @@ def train_round(
     from ``start.model`` with every round so far. ``device``: a ``torch.device`` (default: automatic)."""
     from annocell import folder as af
 
-    from macroseg.train import load_model_record, train, training_set
+    from annoloop.train import load_model_record, train, training_set
 
     models, root, number = Path(settings.paths.models), settings.paths.annotations, round_settings.round
     name = name or model_name(number, sequential=from_model is not None)
@@ -203,7 +184,7 @@ def train_round(
             raise ValueError(f"{from_model} learnt from {record['channels']}, not {list(settings.start.channels)}.")
         start_model, rounds = str(models / from_model / record["name"]), [number]
     still_open = sorted(
-        {r.round for r in af.rois(root) if r.round in rounds and not af.is_closed(af.read_record(r.folder))}
+        {r.round for r in af.images(root) if r.round in rounds and not af.is_closed(af.read_record(r.folder))}
     )
     if still_open:
         log.warning("Round(s) %s not closed: training on the images complete now.", still_open)
@@ -238,28 +219,28 @@ def train_round(
     return folder
 
 
-def score_on_test_regions(settings: GlobalSettings, model: str | None = None, device=None) -> dict:
-    """Score ``model`` (in ``paths.models``), or the starting model if None (round 0), on the test regions."""
-    from macroseg.train import score_model, score_test_regions
+def score_on_test_images(settings: GlobalSettings, model: str | None = None, device=None) -> dict:
+    """Score ``model`` (in ``paths.models``), or the starting model if None (round 0), on the test images."""
+    from annoloop.train import score_model, score_test_images
 
     kwargs = {} if device is None else {"device": device}
     root, start = settings.paths.annotations, settings.start
     if model is None:
-        record = score_test_regions(root, start.model, start.model, 0, start.channels, **kwargs)
+        record = score_test_images(root, start.model, start.model, 0, start.channels, **kwargs)
     else:
         folder = Path(settings.paths.models) / model
         if not (folder / "model.json").exists():
             raise FileNotFoundError(f"Model {model}: no {folder}/model.json.")
         record = score_model(root, folder, **kwargs)
-    for region in record["regions"]:
-        values = ", ".join(f"{k} {v}" for k, v in region.items() if k.startswith("AP@"))
-        log.info("%s on %s (%s): %s", record["model"], region["region"], region["annotator"], values)
+    for test in record["images"]:
+        values = ", ".join(f"{k} {v}" for k, v in test.items() if k.startswith("AP@"))
+        log.info("%s on %s (%s): %s", record["model"], test["image"], test["annotator"], values)
     return record
 
 
 def stats(settings: GlobalSettings, by_annotator: bool = False):
-    """The corrections per round, or per round and annotator (``macroseg.annotation.summarize_rounds``)."""
-    from macroseg.annotation import load_annotations, summarize_rounds
+    """The corrections per round, or per round and annotator (``annoloop.annotation.summarize_rounds``)."""
+    from annoloop.annotation import load_annotations, summarize_rounds
 
     by = ("round", "annotator") if by_annotator else ("round",)
     return summarize_rounds(load_annotations(settings.paths.annotations), by=by)
@@ -270,7 +251,7 @@ def _store(settings: GlobalSettings, image: RoundImage):
     file, level or crop is refused: the image name is already taken."""
     from spatialdata import read_zarr
 
-    from macroseg.ingest import ingest
+    from annoloop.ingest import ingest
 
     store = store_path(settings, image)
     if store.exists():
@@ -289,17 +270,16 @@ def _store(settings: GlobalSettings, image: RoundImage):
     partial = store.with_name(f"{image.name}.partial.zarr")
     shutil.rmtree(partial, ignore_errors=True)
     partial.parent.mkdir(parents=True, exist_ok=True)
-    cfg = InputConfig(path=image.path, channels=dict(settings.channels), level=settings.level, crop=image.crop)
-    ingest(cfg, settings.element).write(partial)
+    ingest(image.path, settings.element, settings.channels, settings.level, image.crop).write(partial)
     partial.rename(store)
     log.info("%s: ingested into %s in %.0f s", image.name, store, time.monotonic() - started)
     return read_zarr(store)
 
 
-def _segmentation(sdata, settings: GlobalSettings, image: RoundImage, step: SegmentationStep, model, **model_kwargs):
+def _segmentation(sdata, settings: GlobalSettings, image: RoundImage, step: Segmentation, model, **model_kwargs):
     """``step`` in the store, run unless it is there already: its intensity table is written last, so a labels
     element without one is from an interrupted run and is redone."""
-    from macroseg.baseline import measure, segment
+    from annoloop.segmentation import measure, segment
 
     if step.labels in sdata.labels and f"{step.labels}_intensities" in sdata.tables:
         log.info("%s: segmentation %s exists", image.name, step.labels)
@@ -315,14 +295,15 @@ def _segmentation(sdata, settings: GlobalSettings, image: RoundImage, step: Segm
     return sdata
 
 
-def _export(sdata, cfg: _ExportConfig, settings: GlobalSettings, round_settings: RoundSettings, step, annotator: str):
-    from macroseg.annotation import export_round
+def _export(sdata, image: RoundImage, settings: GlobalSettings, round_settings: RoundSettings, step, annotator: str):
+    from annoloop.annotation import export_round
 
     display = settings.display
     return export_round(
         sdata,
-        cfg,
-        step.labels,
+        image.name,
+        settings.element,
+        step,
         settings.paths.annotations,
         round_settings.round,
         annotator,
@@ -342,7 +323,7 @@ def main(argv: list[str] | None = None) -> None:
         "prepare": "Ingest, segment and export the images of a round.",
         "close": "Close a round.",
         "train": "Fine-tune a model on the complete images of a round.",
-        "score": "Score a model on the test regions.",
+        "score": "Score a model on the test images.",
         "stats": "The corrections per round, from AnnoCell's reviews.",
     }
     parsers = {}
@@ -376,7 +357,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "train":
         train_round(settings, round_settings, args.from_model, args.name, _torch_device(args.device))
     elif args.command == "score":
-        score_on_test_regions(settings, None if args.start else args.model, _torch_device(args.device))
+        score_on_test_images(settings, None if args.start else args.model, _torch_device(args.device))
     else:
         table = stats(settings, by_annotator=args.by_annotator)
         print(table.to_string() if not table.empty else "No image exported yet.")

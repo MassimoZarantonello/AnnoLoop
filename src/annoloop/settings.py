@@ -6,16 +6,16 @@
 - **Round** (``configs/rounds/round_<NN>.yaml``): the round number, the model that proposes the masks (none: the
   starting model), and the images with the annotators each one goes to.
 
-Both are strict, like ``macroseg.config``: an unknown key, a missing key or a channel that is not defined is an
-error before anything runs. Paths may use ``${MACROSEG_...}`` variables from ``.env`` (``macroseg.paths``).
+Both are strict: an unknown key, a missing key or a channel that is not defined is an
+error before anything runs. Paths may use ``${ANNOLOOP_...}`` variables from ``.env`` (``annoloop.paths``).
 
 Global file::
 
     paths:
-      input: ${MACROSEG_INPUT}              # image paths in round files are relative to this
-      runs: ${MACROSEG_RUNS}                # one .zarr store per image: <runs>/<image>.zarr
-      annotations: ${MACROSEG_ANNOTATIONS}  # AnnoCell folders: <annotations>/<annotator>/round_<NN>/<image>/
-      models: ${MACROSEG_MODELS}            # fine-tuned models: <models>/<name>/
+      input: ${ANNOLOOP_INPUT}              # image paths in round files are relative to this
+      runs: ${ANNOLOOP_RUNS}                # one .zarr store per image: <runs>/<image>.zarr
+      annotations: ${ANNOLOOP_ANNOTATIONS}  # AnnoCell folders: <annotations>/<annotator>/round_<NN>/<image>/
+      models: ${ANNOLOOP_MODELS}            # fine-tuned models: <models>/<name>/
     element: macsima_image    # image element in each store
     level: 0                  # pyramid level read from the raw files (optional, default 0)
     channels:                 # raw file channel name -> short name; unlisted channels are dropped
@@ -51,19 +51,10 @@ from typing import Any
 
 import yaml
 
-from macroseg.config import (
-    ConfigError,
-    TrainingConfig,
-    _cellpose_channels,
-    _check_keys,
-    _crop,
-    _mapping,
-    _non_negative_float,
-    _path,
-    _positive_float,
-    _positive_int,
-    _str,
-)
+from annoloop import paths
+from annoloop.segmentation import Segmentation
+
+MAX_CELLPOSE_CHANNELS = 3
 
 # The same rule as ``annocell.folder.ANNOTATOR`` (a folder name on Mac and Windows alike); repeated here so the
 # settings load without the imaging stack. A test keeps the two equal.
@@ -72,21 +63,26 @@ ANNOTATOR = re.compile(r"[a-z0-9-]+")
 IMAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
+class ConfigError(ValueError):
+    """A settings file is missing keys, has unknown keys or invalid values."""
+
+
+@dataclass(frozen=True)
+class TrainingSettings:
+    """The same every round: never changed after looking at a test score."""
+
+    learning_rate: float = 1e-5
+    weight_decay: float = 0.1
+    n_epochs: int = 100
+    batch_size: int = 1
+
+
 @dataclass(frozen=True)
 class Paths:
     input: str
     runs: str
     annotations: str
     models: str
-
-
-@dataclass(frozen=True)
-class StartSegmentation:
-    labels: str
-    """Labels element of the starting segmentation in each store."""
-    channels: tuple[str, ...]
-    model: str = "cpsam_v2"
-    diameter: float | None = None
 
 
 @dataclass(frozen=True)
@@ -103,10 +99,11 @@ class GlobalSettings:
     element: str
     channels: Mapping[str, str]
     """Raw file channel name -> short name."""
-    start: StartSegmentation
+    start: Segmentation
+    """The starting segmentation of every image (round 1)."""
     level: int = 0
     display: Display = field(default_factory=Display)
-    training: TrainingConfig = field(default_factory=TrainingConfig)
+    training: TrainingSettings = field(default_factory=TrainingSettings)
     source: str = "<settings>"
     """The file these settings were read from."""
 
@@ -178,10 +175,10 @@ def parse_settings(raw: Any, source: str = "<settings>") -> GlobalSettings:
     section = _mapping(root["start"], where)
     _check_keys(section, where, required={"labels", "channels"}, optional={"model", "diameter"})
     diameter = section.get("diameter")
-    start = StartSegmentation(
+    start = Segmentation(
         labels=_name(section["labels"], f"{where}.labels"),
         channels=_known(_cellpose_channels(section["channels"], f"{where}.channels"), short, f"{where}.channels"),
-        model=_str(section.get("model", StartSegmentation.model), f"{where}.model"),
+        model=_str(section.get("model", Segmentation.model), f"{where}.model"),
         diameter=None if diameter is None else _positive_float(diameter, f"{where}.diameter"),
     )
 
@@ -202,8 +199,8 @@ def parse_settings(raw: Any, source: str = "<settings>") -> GlobalSettings:
     where = f"{source}: training"
     section = _mapping(root.get("training") or {}, where)
     _check_keys(section, where, required=set(), optional={"learning_rate", "weight_decay", "n_epochs", "batch_size"})
-    defaults = TrainingConfig()
-    training = TrainingConfig(
+    defaults = TrainingSettings()
+    training = TrainingSettings(
         learning_rate=_positive_float(section.get("learning_rate", defaults.learning_rate), f"{where}.learning_rate"),
         weight_decay=_non_negative_float(section.get("weight_decay", defaults.weight_decay), f"{where}.weight_decay"),
         n_epochs=_positive_int(section.get("n_epochs", defaults.n_epochs), f"{where}.n_epochs"),
@@ -286,3 +283,88 @@ def _known(names: tuple[str, ...], channels: list[str], where: str) -> tuple[str
     if unknown:
         raise ConfigError(f"{where}: {unknown} not among the channels {channels}.")
     return names
+
+
+def _mapping(value: Any, where: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ConfigError(f"{where}: expected a mapping, got {type(value).__name__}.")
+    return value
+
+
+def _check_keys(section: Mapping[str, Any], where: str, required: set[str], optional: set[str]) -> None:
+    missing = required - section.keys()
+    if missing:
+        raise ConfigError(f"{where}: missing required key(s): {', '.join(sorted(missing))}.")
+    unknown = section.keys() - required - optional
+    if unknown:
+        raise ConfigError(f"{where}: unknown key(s): {', '.join(sorted(map(str, unknown)))}.")
+
+
+def _str(value: Any, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{where}: expected a non-empty string, got {value!r}.")
+    return value
+
+
+def _path(value: Any, where: str) -> str:
+    """A string with its ``${ANNOLOOP_...}`` variables replaced (see ``annoloop.paths``)."""
+    try:
+        return paths.expand(_str(value, where))
+    except KeyError as error:
+        raise ConfigError(f"{where}: {error.args[0]}") from error
+
+
+def _cellpose_channels(value: Any, where: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise ConfigError(f"{where}: expected a non-empty list of channel names.")
+    channels = tuple(_str(item, where) for item in value)
+    if len(channels) > MAX_CELLPOSE_CHANNELS:
+        raise ConfigError(f"{where}: Cellpose takes at most {MAX_CELLPOSE_CHANNELS} channels, got {len(channels)}.")
+    if len(set(channels)) != len(channels):
+        raise ConfigError(f"{where}: channel names must be unique, got {list(channels)}.")
+    return channels
+
+
+def _crop(value: Any, where: str) -> tuple[int, int, int, int] | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in value)
+    ):
+        raise ConfigError(f"{where}: expected [y0, y1, x0, x1] as non-negative integers, got {value!r}.")
+    y0, y1, x0, x1 = value
+    if y1 <= y0 or x1 <= x0:
+        raise ConfigError(f"{where}: expected y0 < y1 and x0 < x1, got {value!r}.")
+    return (y0, y1, x0, x1)
+
+
+def _float(value: Any, where: str) -> float:
+    # PyYAML reads `1e-5` (no dot) as a string, so numeric strings are accepted too.
+    if isinstance(value, bool):
+        raise ConfigError(f"{where}: expected a number, got {value!r}.")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ConfigError(f"{where}: expected a number, got {value!r}.") from None
+
+
+def _positive_float(value: Any, where: str) -> float:
+    number = _float(value, where)
+    if number <= 0:
+        raise ConfigError(f"{where}: must be > 0, got {number}.")
+    return number
+
+
+def _non_negative_float(value: Any, where: str) -> float:
+    number = _float(value, where)
+    if number < 0:
+        raise ConfigError(f"{where}: must be >= 0, got {number}.")
+    return number
+
+
+def _positive_int(value: Any, where: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"{where}: expected a positive integer, got {value!r}.")
+    return value

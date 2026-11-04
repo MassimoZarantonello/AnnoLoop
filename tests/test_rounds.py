@@ -1,9 +1,8 @@
-"""Annotation rounds in the AnnoCell layout: export (training ROIs, test regions), close, finish, read back."""
+"""Annotation rounds in the AnnoCell layout: export (images, test images), close, read back."""
 
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -11,21 +10,23 @@ from annocell import folder as af
 from spatialdata import SpatialData
 from spatialdata.models import Image2DModel, Labels2DModel
 
-from macroseg.annotation import (
+from annoloop.annotation import (
     close_round,
     corrected_masks,
     export_round,
     export_test,
-    finish,
     load_annotations,
-    load_test_patches,
+    load_test_images,
+    score_start,
     summarize_rounds,
 )
-from macroseg.config import SegmentationStep
+from annoloop.segmentation import Segmentation
+
+PROPOSAL = Segmentation(labels="cells", channels=("NaK", "DAPI"))
 
 
 @pytest.fixture
-def sdata_and_cfg():
+def sdata():
     image = np.arange(4 * 20 * 30, dtype=np.uint16).reshape(4, 20, 30)
     labels = np.zeros((20, 30), dtype=np.int32)
     labels[0:10, 0:10] = 40
@@ -41,27 +42,28 @@ def sdata_and_cfg():
         },
     )
     sdata.attrs.update(source="slide.tif", level=0, crop=[100, 120, 200, 230], pixel_size_um=0.17)
-    cfg = SimpleNamespace(
-        name="test_image",
-        image=SimpleNamespace(element="img"),
-        zarr="/somewhere/test_image.zarr",
-        segmentation=(SegmentationStep(labels="cells", channels=("NaK", "DAPI")),),
-    )
-    return sdata, cfg
+    return sdata
 
 
 @pytest.fixture
-def exported(sdata_and_cfg, tmp_path):
-    sdata, cfg = sdata_and_cfg
+def exported(sdata, tmp_path):
     models = tmp_path / "models"
     (models / "model_a").mkdir(parents=True)
     (models / "model_a" / "model.json").write_text(json.dumps({"images": [{"round": 1, "image": "test_image"}]}))
     root = tmp_path / "annotations"
-    return export_round(sdata, cfg, "cells", root, 2, "alice", compare=["model_a"], models_root=models)
+    return export_round(sdata, "test_image", "img", PROPOSAL, root, 2, "alice", compare=["model_a"], models_root=models)
 
 
-def test_export_round_writes_a_self_contained_folder(exported, sdata_and_cfg):
-    sdata, _ = sdata_and_cfg
+def _complete(folder, masks=None):
+    """What AnnoCell does when every cell is OK and the annotator presses Done."""
+    masks = af.read_start(folder) if masks is None else masks
+    cells = af.sync_cells({}, masks, af.read_start(folder))
+    for cell in cells.values():
+        cell.mark(af.OK)
+    af.save(folder, masks, cells, done=True)
+
+
+def test_export_round_writes_a_self_contained_folder(exported, sdata):
     folder = exported
     assert folder.relative_to(folder.parents[2]).as_posix() == "alice/round_02/test_image"
     image, names = af.read_image(folder)
@@ -73,23 +75,25 @@ def test_export_round_writes_a_self_contained_folder(exported, sdata_and_cfg):
     record = af.read_record(folder)
     assert record["mode"] == "train" and record["region"] == [100, 120, 200, 230]
     assert record["annotator"] == "alice" and record["round"] == 2
-    assert record["format_version"] == af.FORMAT_VERSION
+    assert record["format_version"] == af.FORMAT_VERSION and "role" not in record and "status" not in record
     assert record["visible_channels"] == ["NaK", "DAPI"]
+    assert record["start_segmentation"] == {"labels": "cells", "model": "cpsam_v2", "channels": ["NaK", "DAPI"]}
     assert record["compare"] == [{"labels": "model_a", "trained_on_image": True}] and record["colours"] == {}
+    assert record["element"] == "img" and record["zarr"] is None and "code_commit" in record
     [(name, masks, trained)] = af.compare_layers(folder)
     assert name == "model_a" and trained and masks.max() == 1
 
 
-def test_export_round_keeps_corrections_unless_overwrite(exported, sdata_and_cfg):
-    sdata, cfg = sdata_and_cfg
+def test_export_round_keeps_corrections_unless_overwrite(exported, sdata):
     root = exported.parents[2]
     af.save(exported, af.read_start(exported), {})
-    assert export_round(sdata, cfg, "cells", root, 2, "alice") == exported and (exported / af.MASKS).exists()
-    export_round(sdata, cfg, "cells", root, 2, "alice", overwrite=True)
+    assert export_round(sdata, "test_image", "img", PROPOSAL, root, 2, "alice") == exported
+    assert (exported / af.MASKS).exists()
+    export_round(sdata, "test_image", "img", PROPOSAL, root, 2, "alice", overwrite=True)
     assert not (exported / af.MASKS).exists() and not (exported / af.COMPARE).exists()
 
 
-def test_save_and_finish(exported):
+def test_corrections_and_start_score(exported):
     folder = exported
     masks = af.read_start(folder)
     masks[masks == 3] = 0  # deleted
@@ -99,72 +103,60 @@ def test_save_and_finish(exported):
     af.save(folder, masks, cells)
     review = af.read_review(folder)  # AnnoCell's counts, the one definition
     assert review[af.UNREVIEWED] == 1 and (review[af.DRAWN], review[af.EDITED], review["deleted"]) == (1, 1, 1)
-    record = finish(folder)
-    assert record["status"] == "partial" and "counts" not in record and "review" not in record
-    assert 0 < record["start_score"]["AP@0.5"] < 1
     final, by_hand = corrected_masks(folder)
     assert list(by_hand) == [1, 4] and (final == 4).sum() == 80
-    cells[2].state = af.OK
-    af.save(folder, masks, cells, done=True)
-    assert finish(folder)["status"] == "complete"
-    assert af.read_cells(folder)[1] == af.Cell(af.OK, af.EDITED, af.HAND)
+    result = score_start(folder)
+    assert 0 < result["AP@0.5"] < 1 and af.read_record(folder)["start_score"] == result
 
 
-def test_export_test_starts_empty_and_refuses_annotated_regions(exported, sdata_and_cfg):
-    sdata, cfg = sdata_and_cfg
+def test_export_test_starts_empty_and_refuses_annotated_images(exported, sdata):
     root = exported.parents[2]
     with pytest.raises(ValueError, match="within"):
-        export_test(sdata, cfg, [0, 10, 0, 10], root, "carla")
+        export_test(sdata, "test_image", "img", [0, 10, 0, 10], root, "carla")
     sdata.attrs.update(crop=[100, 120, 400, 430])  # far right of the annotated crop
-    folder = export_test(sdata, cfg, [5, 15, 10, 20], root, "carla")
+    folder = export_test(sdata, "test_image", "img", [5, 15, 10, 20], root, "carla")
     assert folder == root / "carla" / "test" / "test_image_y105_x410"
     record = af.read_record(folder)
     assert record["mode"] == "test" and record["region"] == [105, 115, 410, 420]
     assert not (folder / af.START).exists() and af.read_image(folder)[0].shape == (4, 10, 10)
     assert af.read_masks(folder, (10, 10)).max() == 0
-    with pytest.raises(FileNotFoundError):
-        finish(folder)
-    masks = np.zeros((10, 10), dtype=np.uint32)
-    masks[2:6, 2:6] = 1
-    af.save(folder, masks, {1: af.Cell(af.OK, af.DRAWN, af.HAND)}, done=True)
-    assert finish(folder)["status"] == "complete" and "start_score" not in af.read_record(folder)
 
 
-def test_one_annotator_per_roi_and_closed_rounds(exported, sdata_and_cfg):
-    sdata, cfg = sdata_and_cfg
+def test_one_annotator_per_image_and_closed_rounds(exported, sdata):
     root = exported.parents[2]
-    with pytest.raises(ValueError, match="one annotator per ROI"):
-        export_round(sdata, cfg, "cells", root, 2, "bob")
+    with pytest.raises(ValueError, match="one annotator per image"):
+        export_round(sdata, "test_image", "img", PROPOSAL, root, 2, "bob")
     with pytest.raises(ValueError, match="lowercase"):
-        export_round(sdata, cfg, "cells", root, 3, "Bob")
+        export_round(sdata, "test_image", "img", PROPOSAL, root, 3, "Bob")
     assert close_round(root, 2) == [exported]
     assert af.is_closed(af.read_record(exported))
     with pytest.raises(ValueError, match="closed"):
-        export_round(sdata, cfg, "cells", root, 2, "alice", overwrite=True)
-    with pytest.raises(ValueError, match="No ROI"):
+        export_round(sdata, "test_image", "img", PROPOSAL, root, 2, "alice", overwrite=True)
+    with pytest.raises(ValueError, match="No image"):
         close_round(root, 5)
 
 
-def test_load_annotations_and_summary(exported, sdata_and_cfg):
-    sdata, cfg = sdata_and_cfg
+def test_close_round_scores_the_complete_images_and_summary(exported, sdata):
     root = exported.parents[2]
     masks = af.read_start(exported)
     masks[masks == 3] = 0  # deleted
-    cells = af.sync_cells({}, masks, masks)
-    for cell in cells.values():
-        cell.state = af.OK
-    af.save(exported, masks, cells, done=True)
-    finish(exported)
-    export_round(sdata, SimpleNamespace(**{**vars(cfg), "name": "other"}), "cells", root, 2, "bob")
+    _complete(exported, masks)
+    other = export_round(sdata, "other", "img", PROPOSAL, root, 2, "bob")
     sdata.attrs.update(crop=[100, 120, 400, 430])
-    export_test(sdata, cfg, [5, 15, 10, 20], root, "carla")
-    table = load_annotations(root)  # training ROIs only
-    assert list(table["annotator"]) == ["alice", "bob"] and list(table["complete"]) == [True, False]
-    assert list(table["status"]) == ["complete", "exported"] and not table["closed"].any()
-    summary = summarize_rounds(table)
-    assert summary.loc[2, "annotators"] == 2 and summary.loc[2, "rois"] == 2 and summary.loc[2, "complete"] == 1
-    assert summary.loc[2, "cells_deleted"] == 1 and summary.loc[2, "cells_kept"] == 2
-    assert "mean_start_AP@0.75" in summary.columns
-    assert [r["annotator"] for r in load_test_patches(root)] == ["carla"]
-    assert load_annotations(root / "empty").empty and summarize_rounds(load_annotations(root / "empty")).empty
+    export_test(sdata, "test_image", "img", [5, 15, 10, 20], root, "carla")
+    close_round(root, 2)
+    assert "start_score" in af.read_record(exported) and "start_score" not in af.read_record(other)
 
+    table = load_annotations(root)  # training images only
+    assert list(table["annotator"]) == ["alice", "bob"] and list(table["complete"]) == [True, False]
+    assert table["closed"].all()
+    summary = summarize_rounds(table)
+    assert summary.loc[2, "annotators"] == 2 and summary.loc[2, "images"] == 2 and summary.loc[2, "complete"] == 1
+    assert summary.loc[2, "cells_deleted"] == 1 and summary.loc[2, "cells_kept"] == 2
+    assert summary.loc[2, "mean_start_AP@0.5"] == pytest.approx(
+        2 / 3, abs=1e-4
+    )  # bob's image has no score: not counted
+    per_annotator = summarize_rounds(table, by=("round", "annotator"))
+    assert list(per_annotator.index) == [(2, "alice"), (2, "bob")]
+    assert [r["annotator"] for r in load_test_images(root)] == ["carla"]
+    assert load_annotations(root / "empty").empty and summarize_rounds(load_annotations(root / "empty")).empty

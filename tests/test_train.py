@@ -9,13 +9,16 @@ import numpy as np
 import pandas as pd
 import pytest
 from annocell import folder as af
-from spatialdata import SpatialData, read_zarr
+from spatialdata import SpatialData
 from spatialdata.models import Image2DModel, Labels2DModel
 
-from macroseg import train as train_module
-from macroseg.annotation import export_round, export_test
-from macroseg.config import SegmentationStep, TrainingConfig
-from macroseg.train import training_set
+from annoloop import train as train_module
+from annoloop.annotation import export_round, export_test
+from annoloop.segmentation import Segmentation
+from annoloop.settings import TrainingSettings
+from annoloop.train import training_set
+
+PROPOSAL = Segmentation(labels="cells", channels=("NaK", "DAPI"))
 
 
 def _complete(folder, edited=()):
@@ -41,22 +44,14 @@ def annotated(tmp_path):
         images={"img": Image2DModel.parse(image, dims=("c", "y", "x"), c_coords=["NaK", "DAPI", "F480"])},
         labels={"cells": Labels2DModel.parse(labels, dims=("y", "x"))},
     )
-    zarr = tmp_path / "img.zarr"
-    sdata.write(zarr)
-    cfg = SimpleNamespace(
-        name="img",
-        image=SimpleNamespace(element="img"),
-        zarr=str(zarr),
-        segmentation=(SegmentationStep(labels="cells", channels=("NaK", "DAPI")),),
-    )
     root = tmp_path / "annotations"
-    folder = export_round(sdata, cfg, "cells", root, 1, "alice")
+    folder = export_round(sdata, "img", "img", PROPOSAL, root, 1, "alice")
     _complete(folder, edited=[(4, 4), (52, 52)])  # first cell (tile at 0, 0) and last cell (tile at 32, 32)
-    return root, image
+    return root, image, sdata
 
 
 def test_training_set_uses_the_start_channels_and_tiles(annotated):
-    root, image = annotated
+    root, image, _ = annotated
     data = training_set(root, tile_px=32)
     assert data.channels == ["NaK", "DAPI"]  # from the starting segmentation, not every channel of the folder
     assert len(data.tiles) == 4 and data.images[0].shape == (2, 32, 32)
@@ -66,36 +61,32 @@ def test_training_set_uses_the_start_channels_and_tiles(annotated):
     assert data.channels == training_set(root, channels=["NaK", "DAPI"], tile_px=32).channels
 
 
-def test_training_set_takes_complete_rois_of_one_annotator_only(annotated, tmp_path):
-    root, _ = annotated
-    sdata = read_zarr(tmp_path / "img.zarr")
-    cfg = SimpleNamespace(
-        name="img",
-        image=SimpleNamespace(element="img"),
-        zarr=str(tmp_path / "img.zarr"),
-        segmentation=(SegmentationStep(labels="cells", channels=("NaK", "DAPI")),),
-    )
-    folder = export_round(sdata, cfg, "cells", root, 2, "bob")
+def test_an_image_is_annotated_in_one_round_only(annotated):
+    root, _, sdata = annotated
+    with pytest.raises(ValueError, match=r"already given in round 1 \(alice\): every image is annotated once"):
+        export_round(sdata, "img", "img", PROPOSAL, root, 2, "bob")
+    # A second copy made by hand (outside export_round) is still refused by training, not used twice.
+    other = export_round(sdata, "other", "img", PROPOSAL, root, 2, "bob")
     assert len(training_set(root, tile_px=32).tiles) == 4  # bob has not finished: left out
-    _complete(folder)
+    _complete(other)
+    record = af.read_record(other)
+    af.write_record(other, {**record, "image": "img"})
     with pytest.raises(ValueError, match="more than one annotator"):
         training_set(root, tile_px=32)
 
 
-def test_training_set_leaves_out_test_patches_and_tiles_near_them(annotated, tmp_path):
-    root, _ = annotated
-    sdata = read_zarr(tmp_path / "img.zarr")
+def test_training_set_leaves_out_test_images_and_tiles_near_them(annotated):
+    root, _, sdata = annotated
     sdata.attrs.update(source="slide.tif", level=0, crop=[1000, 1064, 2000, 2064])
     record_file = root / "alice" / "round_01" / "img" / "annotation.json"
     record = json.loads(record_file.read_text())
     record.update(source="slide.tif", level=0, region=[1000, 1064, 2000, 2064])
     record_file.write_text(json.dumps(record))
-    cfg = SimpleNamespace(name="other", image=SimpleNamespace(element="img"), zarr="x.zarr")
     with pytest.raises(ValueError, match="within 60 px"):
-        export_test(sdata, cfg, [0, 32, 0, 32], root, "carla")  # inside the annotated crop
-    # A patch up and right of the crop: 10 px above it, 20 px to its right; only the top-right tile is within 30 px.
+        export_test(sdata, "other", "img", [0, 32, 0, 32], root, "carla")  # inside the annotated crop
+    # A test image 10 px above the crop and 20 px to its right: only the top-right tile is within 30 px.
     sdata.attrs.update(crop=[960, 1024, 2084, 2148])
-    export_test(sdata, cfg, [0, 30, 0, 30], root, "carla", margin_px=10)
+    export_test(sdata, "other", "img", [0, 30, 0, 30], root, "carla", margin_px=10)
     data = training_set(root, tile_px=32, margin_px=30)
     assert list(zip(data.tiles["y0"], data.tiles["x0"], strict=True)) == [(0, 0), (32, 0), (32, 32)]
     assert data.near_test == 1
@@ -104,7 +95,7 @@ def test_training_set_leaves_out_test_patches_and_tiles_near_them(annotated, tmp
 
 
 def test_train_saves_weights_tiles_and_record(annotated, tmp_path, monkeypatch):
-    root, _ = annotated
+    root, _, sdata = annotated
     calls = {}
 
     def fake_train_seg(net, train_data, train_labels, save_path, model_name, **kwargs):
@@ -120,7 +111,7 @@ def test_train_saves_weights_tiles_and_record(annotated, tmp_path, monkeypatch):
     monkeypatch.setattr(cellpose.models, "CellposeModel", lambda **kwargs: SimpleNamespace(net=None))
     monkeypatch.setattr(cellpose.train, "train_seg", fake_train_seg)
     data = training_set(root, tile_px=32)
-    settings = TrainingConfig(n_epochs=2)
+    settings = TrainingSettings(n_epochs=2)
     folder = train_module.train(data, tmp_path / "models", "m1", settings)
 
     assert calls == {"n_train": 4, "test_data": None, "n_epochs": 2}  # every tile, no validation
@@ -135,17 +126,21 @@ def test_train_saves_weights_tiles_and_record(annotated, tmp_path, monkeypatch):
         train_module.train(data, tmp_path / "models", "m1", settings)
 
 
-def test_score_test_regions_writes_one_score_per_model(annotated, tmp_path):
-    root, _ = annotated
-    sdata = read_zarr(tmp_path / "img.zarr")
-    sdata.attrs.update(source="slide.tif", level=0, crop=[5000, 5064, 5000, 5064])  # far from the ROI
-    cfg = SimpleNamespace(name="other", image=SimpleNamespace(element="img"), zarr="x.zarr")
-    folder = export_test(sdata, cfg, [0, 32, 0, 32], root, "carla")
-    with pytest.raises(ValueError, match="No test region"):
-        train_module.score_test_regions(root, "cpsam", "cpsam", 0, ["NaK", "DAPI"], segment=lambda image: image[0])
+def test_score_test_images_writes_one_score_per_model(annotated):
+    root, _, sdata = annotated
+    sdata.attrs.update(source="slide.tif", level=0, crop=[5000, 5064, 5000, 5064])  # far from the image
+    folder = export_test(sdata, "other", "img", [0, 32, 0, 32], root, "carla")
+    with pytest.raises(ValueError, match="No complete test image"):
+        train_module.score_test_images(root, "cpsam", "cpsam", 0, ["NaK", "DAPI"], segment=lambda image: image[0])
     truth = np.zeros((32, 32), dtype=np.uint32)
     truth[2:10, 2:10], truth[20:28, 20:28] = 1, 2
-    af.save(folder, truth, af.sync_cells({}, truth, np.zeros_like(truth)))
+    cells = af.sync_cells({}, truth, np.zeros_like(truth))
+    af.save(folder, truth, cells)
+    with pytest.raises(ValueError, match="No complete test image"):  # drawn, but Done not pressed
+        train_module.score_test_images(root, "cpsam", "cpsam", 0, ["NaK", "DAPI"], segment=lambda image: image[0])
+    for cell in cells.values():
+        cell.mark(af.OK)
+    af.save(folder, truth, cells, done=True)
     seen = []
 
     def half_right(image):  # finds the first cell only
@@ -154,8 +149,8 @@ def test_score_test_regions_writes_one_score_per_model(annotated, tmp_path):
         found[2:10, 2:10] = 1
         return found
 
-    record = train_module.score_test_regions(root, "cpsam", "cpsam", 0, ["NaK", "DAPI"], segment=half_right)
+    record = train_module.score_test_images(root, "cpsam", "cpsam", 0, ["NaK", "DAPI"], segment=half_right)
     assert seen == [(2, 32, 32)]  # the model's channels only
-    [region] = record["regions"]
-    assert region["region"] == folder.name and region["AP@0.5"] == 0.5 and region["annotator"] == "carla"
+    [test] = record["images"]
+    assert test["image"] == folder.name and test["AP@0.5"] == 0.5 and test["annotator"] == "carla"
     assert [s["model"] for s in af.read_scores(root)] == ["cpsam"]

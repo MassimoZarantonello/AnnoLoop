@@ -4,12 +4,12 @@
 write that loop ourselves, in plain PyTorch, so we understand it and can change it. Examples: give hand-drawn cells
 more weight, or draw tiles with macrophages more often.
 
-The rest of the pipeline stays the same. `macroseg.train.train` already takes a `trainer=` argument, and it records
+The rest of the pipeline stays the same. `annoloop.train.train` already takes a `trainer=` argument, and it records
 which loop trained each model (`trainer` in `model.json`).
 
 ## What to write
 
-`src/macroseg/trainer.py`, with one function that has the same contract as Cellpose's:
+`src/annoloop/trainer.py`, with one function that has the same contract as Cellpose's:
 
 ```python
 def train_seg(net, train_data, train_labels, channel_axis, n_epochs, learning_rate, weight_decay,
@@ -24,7 +24,7 @@ def train_seg(net, train_data, train_labels, channel_axis, n_epochs, learning_ra
 - Save the weights with `net.save_model(save_path / "models" / model_name)` and return that path.
   `train` then moves them next to `model.json`.
 
-To try it, call `train(data, models_root, "try1", settings, trainer=trainer.train_seg)` from a notebook on a few
+To try it, call `train(data, models_root, "try1", settings, trainer=trainer.train_seg)` from a script on a few
 tiles. A `--trainer` flag for `annoloop train` can come later.
 
 ## The five pieces (each is a few lines)
@@ -75,7 +75,7 @@ runs exactly with Cellpose's loop.
   file exists, and `train_losses` has `n_epochs` values. `tests/test_train.py` and `tests/test_loop.py` show how the
   tiles are made.
 - **Against Cellpose:** on the same small set of tiles (say 20) and with the same seeds, train for 10 to 20 epochs
-  with both loops. The loss curves should be close. Then score both models on a test region (`annoloop score`).
+  with both loops. The loss curves should be close. Then score both models on a test image (`annoloop score`).
 - **Where to run it:** the real network has about 300 M parameters. On the Mac (MPS), only run a few tiles and a
   few epochs to check that it runs. Real training goes on the cluster.
 
@@ -85,8 +85,8 @@ runs exactly with Cellpose's loop.
   official "Learn the Basics" tutorial on pytorch.org covers all of it in about an hour.
 - What Cellpose predicts and why: flows plus cell probability, and how masks are rebuilt from them by following the
   flows. The Cellpose paper (Stringer et al., 2021, Nature Methods) explains it in its Figure 1.
-- How our tiles are made: `macroseg.train.training_set` and `_tiles`. These are 512 px tiles of the complete
-  images, renumbered per tile, with tiles near a test region dropped.
+- How our tiles are made: `annoloop.train.training_set` and `_tiles`. These are 512 px tiles of the complete
+  images, renumbered per tile, with tiles near a test image dropped.
 
 ## Once it works: ideas it opens up
 

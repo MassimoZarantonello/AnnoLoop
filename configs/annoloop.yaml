@@ -3,10 +3,10 @@
 # Changing the channels or the starting segmentation after round 1 makes the rounds incomparable.
 
 paths:
-  input: ${MACROSEG_INPUT}              # raw MACSima images; round files give paths relative to this
-  runs: ${MACROSEG_RUNS}                # one SpatialData store per image: <runs>/<image>.zarr
-  annotations: ${MACROSEG_ANNOTATIONS}  # AnnoCell folders: <annotations>/<annotator>/round_<NN>/<image>/
-  models: ${MACROSEG_MODELS}            # fine-tuned models: <models>/<name>/
+  input: ${ANNOLOOP_INPUT}              # raw MACSima images; round files give paths relative to this
+  runs: ${ANNOLOOP_RUNS}                # one SpatialData store per image: <runs>/<image>.zarr
+  annotations: ${ANNOLOOP_ANNOTATIONS}  # AnnoCell folders: <annotations>/<annotator>/round_<NN>/<image>/
+  models: ${ANNOLOOP_MODELS}            # fine-tuned models: <models>/<name>/
 
 element: macsima_image  # the image element in each store
 level: 0                # pyramid level read from the raw files (0 = full resolution)

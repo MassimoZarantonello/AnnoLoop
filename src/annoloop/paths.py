@@ -1,7 +1,7 @@
 """Machine-specific paths, read from environment variables or from the ``.env`` file at the repo root.
 
 Each machine has its own ``.env`` (not in git; ``.env.example`` lists the variables). Configs refer to the
-variables as ``${MACROSEG_RUNS}``, so the same config works on every machine. A relative path is taken
+variables as ``${ANNOLOOP_RUNS}``, so the same config works on every machine. A relative path is taken
 from the repo root. A variable already set in the environment wins over ``.env``.
 """
 

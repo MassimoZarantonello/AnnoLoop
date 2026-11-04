@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -13,10 +13,10 @@ import yaml
 from annocell import folder as af
 from scipy import ndimage as ndi
 
-from macroseg import settings as st
-from macroseg.annotation import close_round
-from macroseg.config import ConfigError
-from macroseg.loop import check_round, main, prepare_round, proposal
+from annoloop import settings as st
+from annoloop.annotation import close_round
+from annoloop.loop import check_round, main, prepare_round, proposal
+from annoloop.settings import ConfigError
 
 FILE_NAMES = ["DAPI C1 (DAPI C1)", "Na_K_ATPase (APC C2)", "F4_80 (APC C4)"]
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
@@ -128,7 +128,7 @@ def test_round_settings_errors(tmp_path, change, message):
 
 def test_example_settings_files_load(tmp_path, monkeypatch):
     for name in ("INPUT", "RUNS", "ANNOTATIONS", "MODELS"):
-        monkeypatch.setenv(f"MACROSEG_{name}", str(tmp_path / name.lower()))
+        monkeypatch.setenv(f"ANNOLOOP_{name}", str(tmp_path / name.lower()))
     settings = st.load_settings(CONFIGS / "annoloop.yaml")
     round_settings = st.load_round(CONFIGS / "rounds" / "round_01.yaml", settings)
     assert settings.start.labels == "membrane_dapi_f480" and round_settings.round == 1
@@ -180,6 +180,9 @@ def test_check_round_refuses_before_any_work(tmp_path, raw):
     moved = _round(images={"img_a": {"path": "slide_a.ome.tif", "annotators": ["carla"]}})
     with pytest.raises(ValueError, match=r"already given to \['alice'\]"):
         check_round(settings, st.parse_round(moved, settings))
+    again = _round(round=2, images={"img_a": {"path": "slide_a.ome.tif", "annotators": ["alice"]}})
+    with pytest.raises(ValueError, match=r"img_a was already given in round 1 \(alice\)"):
+        check_round(settings, st.parse_round(again, settings))
     close_round(settings.paths.annotations, 1)
     with pytest.raises(ValueError, match="round 1 is closed"):
         check_round(settings, round_settings)
@@ -188,6 +191,7 @@ def test_check_round_refuses_before_any_work(tmp_path, raw):
 def test_a_store_name_is_not_reused_for_another_image(tmp_path, raw):
     settings, round_settings = _load(tmp_path)
     prepare_round(settings, round_settings, model=CountingModel())
+    shutil.rmtree(settings.paths.annotations)  # the store stays, e.g. from a run whose round file was then changed
     other = _round(round=2, images={"img_a": {"path": "slide_b.ome.tif", "annotators": ["alice"]}})
     with pytest.raises(ValueError, match="give the image another name"):
         prepare_round(settings, st.parse_round(other, settings), model=CountingModel())
@@ -215,7 +219,7 @@ def test_command_line(tmp_path, raw, caplog):
     with caplog.at_level("INFO", logger="annoloop"):
         main(["prepare", str(settings_file), str(round_file), "--dry-run"])
     assert "to export" in caplog.text and not (tmp_path / "annotations").exists()
-    with pytest.raises(ValueError, match="No ROI"):
+    with pytest.raises(ValueError, match="No image"):
         main(["close", str(settings_file), str(round_file)])
 
 
@@ -238,7 +242,7 @@ def fake_cellpose(monkeypatch):
     import cellpose.models
     import cellpose.train
 
-    from macroseg import train as train_module
+    from annoloop import train as train_module
 
     trainings = []
 
@@ -263,7 +267,7 @@ def fake_cellpose(monkeypatch):
 
 
 def test_train_from_the_start_model_on_every_round_or_sequentially(tmp_path, raw, fake_cellpose):
-    from macroseg.loop import train_round
+    from annoloop.loop import train_round
 
     settings, round_1 = _load(tmp_path)
     _complete_all(prepare_round(settings, round_1, model=CountingModel()))
@@ -296,29 +300,31 @@ def test_train_from_the_start_model_on_every_round_or_sequentially(tmp_path, raw
 
 
 def test_score_and_stats(tmp_path, raw, fake_cellpose):
-    from macroseg.annotation import export_test
-    from macroseg.loop import score_on_test_regions, stats, train_round
+    from annoloop.annotation import export_test
+    from annoloop.loop import score_on_test_images, stats, train_round
 
     settings, round_1 = _load(tmp_path)
     folders = prepare_round(settings, round_1, model=CountingModel())
     _complete_all(folders[:1])
     table = stats(settings, by_annotator=True)
     assert list(table.index) == [(1, "alice"), (1, "bob")] and list(table["complete"]) == [1, 0]
-    assert stats(settings).loc[1, "rois"] == 2
+    assert stats(settings).loc[1, "images"] == 2
 
     from spatialdata import read_zarr
 
     sdata = read_zarr(tmp_path / "runs" / "img_a.zarr")
     sdata.attrs.update(source="another_slide.tif")
-    cfg = SimpleNamespace(name="slide_c", image=SimpleNamespace(element="img"), zarr="c.zarr")
-    region = export_test(sdata, cfg, [0, 64, 0, 80], settings.paths.annotations, "expert")
+    region = export_test(sdata, "slide_c", "img", [0, 64, 0, 80], settings.paths.annotations, "expert")
     truth, _ = ndi.label(af.read_image(region)[0][0] > 500)
-    af.save(region, truth.astype(np.uint32), af.sync_cells({}, truth, np.zeros_like(truth)))
+    cells = af.sync_cells({}, truth, np.zeros_like(truth))
+    for cell in cells.values():
+        cell.mark(af.OK)
+    af.save(region, truth.astype(np.uint32), cells, done=True)  # the expert pressed Done
 
-    start = score_on_test_regions(settings)
-    assert start["model"] == "cpsam_v2" and start["round"] == 0 and start["regions"][0]["AP@0.5"] == 1.0
+    start = score_on_test_images(settings)
+    assert start["model"] == "cpsam_v2" and start["round"] == 0 and start["images"][0]["AP@0.5"] == 1.0
     train_round(settings, round_1)
-    assert score_on_test_regions(settings, "model_r01")["round"] == 1
+    assert score_on_test_images(settings, "model_r01")["round"] == 1
     assert [s["model"] for s in af.read_scores(settings.paths.annotations)] == ["cpsam_v2", "model_r01"]
     with pytest.raises(FileNotFoundError, match="no "):
-        score_on_test_regions(settings, "nothing")
+        score_on_test_images(settings, "nothing")
