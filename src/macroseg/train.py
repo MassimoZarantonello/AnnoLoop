@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from importlib.metadata import version
@@ -69,19 +69,23 @@ def training_set(
     channels: Sequence[str] | None = None,
     tile_px: int = TILE_PX,
     margin_px: int = MARGIN_PX,
+    rounds: Collection[int] | None = None,
 ) -> TrainingSet:
     """Tiles of every complete training ROI under the annotations ``root``.
 
     ``channels``: image channels the model learns from; default the channels of the segmentation each image
-    started from (they must be the same for all images).
+    started from (they must be the same for all images). ``rounds``: only the ROIs of these rounds (default all).
     """
     from spatialdata import read_zarr
 
     annotations = load_annotations(root)
     # Only fully reviewed training ROIs; test regions (<annotator>/test) are never read here.
     done = annotations[annotations["complete"]] if not annotations.empty else annotations
+    if rounds is not None and not done.empty:
+        done = done[done["round"].isin(list(rounds))]
     if done.empty:
-        raise ValueError(f"No complete ROI under {root}: every cell of an ROI must be checked.")
+        where = "" if rounds is None else f" in rounds {sorted(rounds)}"
+        raise ValueError(f"No complete ROI under {root}{where}: every cell of an ROI must be checked.")
     twice = done.loc[done["image"].duplicated(keep=False), ["image", "annotator"]]
     if not twice.empty:  # blending several annotators of one ROI is not built (docs/concurrent_annotations.md)
         raise ValueError(f"ROIs complete for more than one annotator: {twice.to_dict('records')}.")
@@ -134,9 +138,13 @@ def train(
     settings: TrainingConfig,
     start_model: str = "cpsam_v2",
     device=None,
+    extra: Mapping | None = None,
+    trainer=None,
 ) -> Path:
-    """Fine-tune ``start_model`` on every tile with ``settings`` (the config's ``training`` section) and save it in
-    ``<models_root>/<name>/``; returns that folder."""
+    """Fine-tune ``start_model`` (a pretrained name or the weights of a fine-tuned model) on every tile with
+    ``settings`` (the config's ``training`` section) and save it in ``<models_root>/<name>/``; returns that folder.
+    ``extra``: more fields for ``model.json`` (e.g. the settings files, the model it continues). ``trainer``: the
+    training loop, with the signature and return value of Cellpose's ``train.train_seg`` (default: that one)."""
     from cellpose import models
     from cellpose import train as cellpose_train
 
@@ -145,7 +153,8 @@ def train(
         raise FileExistsError(f"{folder} exists; choose another name or delete it.")
     model = models.CellposeModel(gpu=True, pretrained_model=start_model, device=device)
     folder.mkdir(parents=True)
-    weights, train_losses, _ = cellpose_train.train_seg(
+    trainer = trainer or cellpose_train.train_seg
+    weights, train_losses, _ = trainer(
         model.net,
         train_data=data.images,
         train_labels=data.masks,
@@ -175,8 +184,10 @@ def train(
         "hand_drawn_cells": int(data.tiles["hand_drawn"].sum()),
         "parameters": asdict(settings),
         "train_losses": [round(float(v), 5) for v in np.ravel(train_losses)],
+        "trainer": f"{trainer.__module__}.{trainer.__qualname__}",
         "macroseg_commit": _git_commit(),
         "cellpose_version": version("cellpose"),
+        **dict(extra or {}),
     }
     (folder / "model.json").write_text(json.dumps(record, indent=2) + "\n")
     return folder

@@ -1,0 +1,36 @@
+# Global settings of the annotation loop (AnnoLoop.md, D9): what must not change between rounds.
+# Read by every `annoloop` command together with a round file (configs/rounds/round_<NN>.yaml).
+# Changing the channels or the starting segmentation after round 1 makes the rounds incomparable.
+
+paths:
+  input: ${MACROSEG_INPUT}              # raw MACSima images; round files give paths relative to this
+  runs: ${MACROSEG_RUNS}                # one SpatialData store per image: <runs>/<image>.zarr
+  annotations: ${MACROSEG_ANNOTATIONS}  # AnnoCell folders: <annotations>/<annotator>/round_<NN>/<image>/
+  models: ${MACROSEG_MODELS}            # fine-tuned models: <models>/<name>/
+
+element: macsima_image  # the image element in each store
+level: 0                # pyramid level read from the raw files (0 = full resolution)
+
+channels:  # raw file channel name -> short name (no "/"); unlisted channels are dropped
+  "DAPI C1 (DAPI C1)": DAPI
+  "Na_K_ATPase (APC C2)": NaK_ATPase
+  "F4_80 (APC C4)": F480
+  "FITC (FITC C0)": autofluo_FITC
+  "PE (PE C0)": autofluo_PE
+  "APC (APC C0)": autofluo_APC
+
+start:  # the starting segmentation of every image (D5); later rounds use the round file's model
+  labels: membrane_dapi_f480  # its labels element in each store
+  model: cpsam_v2
+  channels: [NaK_ATPase, DAPI, F480]  # what every model learns from; at most 3
+  diameter: null
+
+display:  # what AnnoCell shows when an image opens; the annotators change it themselves (D1)
+  visible_channels: [F480, NaK_ATPase, DAPI]
+  colours: {F480: red, NaK_ATPase: green, DAPI: blue}  # AnnOverview dims green and blue
+
+training:  # the same every round: never changed after looking at a test score
+  learning_rate: 1.0e-5
+  weight_decay: 0.1
+  n_epochs: 100
+  batch_size: 1

@@ -1,0 +1,12 @@
+# Round 1 (example): which images go to which annotator. Drafted by hand or by AnnOverview's round planner;
+# `annoloop prepare configs/annoloop.yaml configs/rounds/round_01.yaml` does the export.
+# Annotator names are placeholders (D2): lowercase letters, digits and "-".
+
+round: 1
+model: null  # null: the starting segmentation (configs/annoloop.yaml, start); later: a model in paths.models
+
+images:
+  exp201_spc331:  # the image's folder name for its annotator, and its store <runs>/exp201_spc331.zarr
+    path: Exp201_SPC331_261014_AVH_SUBSET_SingleTiff.tif  # relative to paths.input
+    crop: null    # optional [y0, y1, x0, x1] in pixels of the level; null = the whole image
+    annotators: [annotator-1]  # one per image until shared images are built (O1)

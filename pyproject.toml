@@ -13,6 +13,9 @@ dependencies = [
   "pyyaml>=6",
 ]
 
+[project.scripts]
+annoloop = "macroseg.loop:main"
+
 [project.optional-dependencies]
 # Imaging stack. Kept optional so the config and pure-numpy parts install anywhere.
 imaging = [

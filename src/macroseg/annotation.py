@@ -53,6 +53,7 @@ def export_round(
     visible_channels: Sequence[str] | None = None,
     colours: Mapping[str, str] | None = None,
     models_root: str | Path | None = None,
+    settings: Mapping | None = None,
     overwrite: bool = False,
 ) -> Path:
     """Write the folder of training ROI ``cfg.name`` for ``annotator`` in round ``round_number`` and return it:
@@ -62,7 +63,8 @@ def export_round(
     shown read-only; one that is a model in ``models_root`` (``<models_root>/<name>/model.json``) is marked as
     trained on this image if it was. ``visible_channels``: shown when the tool opens (default: the channels of
     the proposed segmentation). ``colours``: napari colormap per channel (e.g. ``{"F480": "red", "NaK_ATPase":
-    "green", "DAPI": "blue"}``); channels without one get red, green, blue in turn. An existing folder is left
+    "green", "DAPI": "blue"}``); channels without one get red, green, blue in turn. ``settings``: the settings the
+    export was made with (e.g. the settings files, the round's model), recorded as is. An existing folder is left
     untouched (it may hold corrections) unless ``overwrite``, which also discards the corrections.
 
     Refused in a closed round, and if the ROI is already given to another annotator in this round (one annotator
@@ -109,6 +111,8 @@ def export_round(
         },
         "compare": [{"labels": name, "trained_on_image": _trained_on(models_root, name, cfg.name)} for name in compare],
     }
+    if settings is not None:
+        record["settings"] = dict(settings)
     af.write_record(folder, record)
     return folder
 
@@ -269,13 +273,14 @@ def load_test_patches(root: str | Path) -> list[dict]:
     return [af.read_record(r.folder) for r in af.rois(root) if r.round is None]
 
 
-def summarize_rounds(annotations: pd.DataFrame) -> pd.DataFrame:
-    """Per round: annotators, ROIs (all, complete: going into training), the corrections in the ROIs AnnoCell saved
-    (its review: cells kept as proposed, edited, deleted, drawn new, OK'd by hand and in bulk), and the mean score
-    of the starting masks (from ``finish``)."""
+def summarize_rounds(annotations: pd.DataFrame, by: Sequence[str] = ("round",)) -> pd.DataFrame:
+    """Per round (or per ``by``, e.g. ``("round", "annotator")``): annotators, ROIs (all, complete: going into
+    training), the corrections in the ROIs AnnoCell saved (its review: cells kept as proposed, edited, deleted, drawn
+    new, OK'd by hand and in bulk), and the mean score of the starting masks (from ``finish``)."""
     if annotations.empty:
         return pd.DataFrame()
-    per_round = annotations.groupby("round").agg(
+    by = list(by)
+    per_round = annotations.groupby(by).agg(
         annotators=("annotator", "nunique"),
         rois=("image", "size"),
         complete=("complete", "sum"),
@@ -285,12 +290,12 @@ def summarize_rounds(annotations: pd.DataFrame) -> pd.DataFrame:
         counts = {"kept": af.PROPOSED, "edited": af.EDITED, "deleted": "deleted", "drawn": af.DRAWN}
         counts |= {"ok_hand": "ok_hand", "ok_bulk": "ok_bulk"}
         present = {k: f"review.{c}" for k, c in counts.items() if f"review.{c}" in saved.columns}
-        per_round = per_round.join(saved.groupby("round").agg(**{f"cells_{k}": (c, "sum") for k, c in present.items()}))
+        per_round = per_round.join(saved.groupby(by).agg(**{f"cells_{k}": (c, "sum") for k, c in present.items()}))
     done = annotations[annotations["status"] != "exported"]
     score_columns = [c for c in done.columns if c.startswith("start_score.AP@")]
     if score_columns and not done.empty:
         scores = {f"mean_start_{c.removeprefix('start_score.')}": (c, "mean") for c in score_columns}
-        per_round = per_round.join(done.groupby("round").agg(**scores))
+        per_round = per_round.join(done.groupby(by).agg(**scores))
     return per_round
 
 
