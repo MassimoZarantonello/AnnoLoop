@@ -223,6 +223,7 @@ computer needs only AnnoCell, never this repository. A plan for blending several
 | `segmentation` | the proposing segmentation (start model or fine-tuned), run chunk-wise through Harpy; intensities per cell |
 | `annotation` | export an image or a test image, close a round (and score the proposals), read the annotations back, summarise them |
 | `train` | training tiles from the AnnoCell folders, fine-tuning (`trainer=` takes another training loop), scoring on the test images |
+| `trainer` | our training loop, the default (`train_seg`, with the contract of Cellpose's; Cellpose's own: `trainer=cellpose.train.train_seg`) |
 | `accuracy` | AP, precision and recall against corrected masks |
 | `paths`, `version` | `${ANNOLOOP_...}` paths from `.env`; the code version recorded in every output |
 
@@ -232,5 +233,6 @@ choice goes into `start` in the global settings.
 ## Next
 
 - Cluster job scripts (SLURM), once the cluster and the storage are decided.
-- Our own training loop: [docs/training_loop.md](docs/training_loop.md).
+- Unit tests for our training loop (`annoloop.trainer`, the default since 2026-11-05; how it was built:
+  [docs/training_loop.md](docs/training_loop.md)), and a longer comparison with Cellpose's loop on the cluster.
 - Shared images (several annotators per image) and the progress measure across rounds.

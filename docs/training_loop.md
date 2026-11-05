@@ -1,6 +1,11 @@
 # Task: our own training loop
 
-`annoloop train` fine-tunes Cellpose-SAM through Cellpose's own loop, `cellpose.train.train_seg`. The task is to
+> **Done (2026-11-05).** The loop is `annoloop.trainer.train_seg` and it is the default of `annoloop train`.
+> On 4 real Exp201 tiles (start masks as labels), 12 epochs on the Mac GPU, its loss curve follows Cellpose's loop
+> and ends at the same value. Cellpose's loop is still there: `train(..., trainer=cellpose.train.train_seg)`.
+> Each model records the loop that trained it (`trainer` in `model.json`). The brief below is kept as written.
+
+`annoloop train` fine-tuned Cellpose-SAM through Cellpose's own loop, `cellpose.train.train_seg`. The task is to
 write that loop ourselves, in plain PyTorch, so we understand it and can change it. Examples: give hand-drawn cells
 more weight, or draw tiles with macrophages more often.
 

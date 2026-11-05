@@ -134,18 +134,19 @@ def train(
     trainer=None,
 ) -> Path:
     """Fine-tune ``start_model`` (a pretrained name or the weights of a fine-tuned model) on every tile with
-    ``settings`` (the config's ``training`` section) and save it in ``<models_root>/<name>/``; returns that folder.
-    ``extra``: more fields for ``model.json`` (e.g. the settings files, the model it continues). ``trainer``: the
-    training loop, with the signature and return value of Cellpose's ``train.train_seg`` (default: that one)."""
+    ``settings`` (the global settings' ``training`` section) and save it in ``<models_root>/<name>/``; returns that
+    folder. ``extra``: more fields for ``model.json`` (e.g. the settings files, the model it continues).
+    ``trainer``: the training loop, with the signature and return value of Cellpose's ``train.train_seg``; default
+    our own, ``annoloop.trainer.train_seg`` (Cellpose's is ``cellpose.train.train_seg``)."""
     from cellpose import models
-    from cellpose import train as cellpose_train
 
     folder = Path(models_root) / name
     if folder.exists():
         raise FileExistsError(f"{folder} exists; choose another name or delete it.")
     model = models.CellposeModel(gpu=True, pretrained_model=start_model, device=device)
     folder.mkdir(parents=True)
-    trainer = trainer or cellpose_train.train_seg
+    if trainer is None:
+        from annoloop.trainer import train_seg as trainer
     weights, train_losses, _ = trainer(
         model.net,
         train_data=data.images,

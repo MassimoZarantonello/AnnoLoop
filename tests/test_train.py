@@ -106,10 +106,11 @@ def test_train_saves_weights_tiles_and_record(annotated, tmp_path, monkeypatch):
         return weights, np.array([1.0, 0.5]), np.array([0.0, 0.0])
 
     import cellpose.models
-    import cellpose.train
+
+    from annoloop import trainer
 
     monkeypatch.setattr(cellpose.models, "CellposeModel", lambda **kwargs: SimpleNamespace(net=None))
-    monkeypatch.setattr(cellpose.train, "train_seg", fake_train_seg)
+    monkeypatch.setattr(trainer, "train_seg", fake_train_seg)  # the default loop, ours
     data = training_set(root, tile_px=32)
     settings = TrainingSettings(n_epochs=2)
     folder = train_module.train(data, tmp_path / "models", "m1", settings)

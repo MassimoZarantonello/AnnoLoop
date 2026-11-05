@@ -240,9 +240,9 @@ def fake_cellpose(monkeypatch):
     import types
 
     import cellpose.models
-    import cellpose.train
 
     from annoloop import train as train_module
+    from annoloop import trainer
 
     trainings = []
 
@@ -261,7 +261,7 @@ def fake_cellpose(monkeypatch):
         return types.SimpleNamespace(net=pretrained_model, eval=evaluate)
 
     monkeypatch.setattr(cellpose.models, "CellposeModel", model)
-    monkeypatch.setattr(cellpose.train, "train_seg", train_seg)
+    monkeypatch.setattr(trainer, "train_seg", train_seg)  # the default training loop, ours
     monkeypatch.setattr(train_module, "training_set", functools.partial(train_module.training_set, tile_px=32))
     return trainings
 
