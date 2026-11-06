@@ -59,7 +59,7 @@ def _complete(folder, masks=None):
     masks = af.read_start(folder) if masks is None else masks
     cells = af.sync_cells({}, masks, af.read_start(folder))
     for cell in cells.values():
-        cell.mark(af.OK)
+        cell.mark(True)
     af.save(folder, masks, cells, done=True)
 
 

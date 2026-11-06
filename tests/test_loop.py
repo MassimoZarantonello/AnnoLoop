@@ -229,7 +229,7 @@ def _complete_all(folders):
         masks = af.read_start(folder)
         cells = af.sync_cells({}, masks, masks)
         for cell in cells.values():
-            cell.mark(af.OK)
+            cell.mark(True)
         af.save(folder, masks, cells, done=True)
 
 
@@ -318,7 +318,7 @@ def test_score_and_stats(tmp_path, raw, fake_cellpose):
     truth, _ = ndi.label(af.read_image(region)[0][0] > 500)
     cells = af.sync_cells({}, truth, np.zeros_like(truth))
     for cell in cells.values():
-        cell.mark(af.OK)
+        cell.mark(True)
     af.save(region, truth.astype(np.uint32), cells, done=True)  # the expert pressed Done
 
     start = score_on_test_images(settings)

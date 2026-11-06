@@ -29,7 +29,7 @@ def _complete(folder, edited=()):
         masks[y, x] = 0
     cells = af.sync_cells({}, masks, start)
     for cell in cells.values():
-        cell.state = af.OK
+        cell.ok = True
     af.save(folder, masks, cells, done=True)  # Done pressed
 
 
@@ -140,7 +140,7 @@ def test_score_test_images_writes_one_score_per_model(annotated):
     with pytest.raises(ValueError, match="No complete test image"):  # drawn, but Done not pressed
         train_module.score_test_images(root, "cpsam", "cpsam", 0, ["NaK", "DAPI"], segment=lambda image: image[0])
     for cell in cells.values():
-        cell.mark(af.OK)
+        cell.mark(True)
     af.save(folder, truth, cells, done=True)
     seen = []
 
