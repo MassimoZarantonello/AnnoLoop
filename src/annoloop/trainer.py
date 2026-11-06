@@ -58,7 +58,7 @@ def _process_input(train_data, train_masks, device, min_cells=5):
 def _lr_schedule(learning_rate, n_epochs) -> np.ndarray:
     """Learning rate of each epoch, as Cellpose's: a linear warm-up from 0 over 10 epochs, flat, then halved 10
     times (every 5 epochs over the last 50 from 100 epochs, every 10 over the last 100 above 300 epochs).
-    Below 10 epochs the array is 10 long (only the first ``n_epochs`` are used)."""
+    Always ``n_epochs`` long: below 10 epochs the warm-up is cut short."""
     LR = np.linspace(0, learning_rate, 10)
     LR = np.append(LR, learning_rate * np.ones(max(0, n_epochs - 10)))
     if n_epochs > 300:
@@ -69,7 +69,7 @@ def _lr_schedule(learning_rate, n_epochs) -> np.ndarray:
         LR = LR[:-50]
         for _ in range(10):
             LR = np.append(LR, LR[-1] / 2 * np.ones(5))
-    return LR
+    return LR[:n_epochs]
 
 
 _mse = nn.MSELoss(reduction="mean")
@@ -124,58 +124,71 @@ def train_seg(
     if net.dtype == torch.bfloat16:
         train_logger.info("Network in bfloat16: trained in float32, converted back at the end")
         net.dtype = torch.float32
+    try:
+        train_images, train_flows = _process_input(train_data, train_labels, device)
+        # Unlike Cellpose's loop, net.diam_labels is not set: Cellpose 4 never reads it (it rescaled images before
+        # Cellpose-SAM).
+        nimg = len(train_images)
+        LR = _lr_schedule(learning_rate, n_epochs)
+        optimizer = torch.optim.AdamW(net.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-    train_images, train_flows = _process_input(train_data, train_labels, device)
-    nimg = len(train_images)
-    LR = _lr_schedule(learning_rate, n_epochs)
-    optimizer = torch.optim.AdamW(net.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        t0 = time.time()
+        model_name = f"cellpose_{t0}" if model_name is None else model_name
+        save_path = Path.cwd() if save_path is None else Path(save_path)
+        (save_path / "models").mkdir(parents=True, exist_ok=True)
+        filename = save_path / "models" / model_name
+        train_logger.info("Saving the model to %s", filename)
 
-    t0 = time.time()
-    model_name = f"cellpose_{t0}" if model_name is None else model_name
-    save_path = Path.cwd() if save_path is None else Path(save_path)
-    (save_path / "models").mkdir(parents=True, exist_ok=True)
-    filename = save_path / "models" / model_name
-    train_logger.info("Saving the model to %s", filename)
+        net.train()
+        train_losses = np.zeros(n_epochs)
+        for iepoch in range(n_epochs):
+            # numpy draws the tile order and the augmentation; torch any randomness inside the network
+            np.random.seed(iepoch)
+            torch.manual_seed(iepoch)
+            rperm = np.random.permutation(nimg)  # every tile once per epoch, in a random order
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = LR[iepoch]
 
-    net.train()
-    train_losses = np.zeros(n_epochs)
-    for iepoch in range(n_epochs):
-        np.random.seed(iepoch)
-        rperm = np.random.permutation(nimg)  # every tile once per epoch, in a random order
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = LR[iepoch]
+            for k in range(0, nimg, batch_size):
+                inds = rperm[k : k + batch_size]  # the last batch may be smaller
+                imgs = [train_images[i] for i in inds]
+                # without channel 0 (the labels): the augmentation takes (inside a cell, dy, dx)
+                lbls = [train_flows[i][1:] for i in inds]
+                # augmentations: the same random crop, rotation, flip and rescaling for images and flows
+                X, lbl = random_rotate_and_resize(imgs, lbls=lbls, bsize=bsize, scale_range=scale_range, device=device)[
+                    :2
+                ]
 
-        for k in range(0, nimg, batch_size):
-            inds = rperm[k : k + batch_size]  # the last batch may be smaller
-            imgs = [train_images[i] for i in inds]
-            # without channel 0 (the labels): the augmentation takes (inside a cell, dy, dx)
-            lbls = [train_flows[i][1:] for i in inds]
-            # augmentations: the same random crop, rotation, flip and rescaling for images and flows
-            X, lbl = random_rotate_and_resize(imgs, lbls=lbls, bsize=bsize, scale_range=scale_range, device=device)[:2]
+                # Only the forward pass and the loss under autocast; the optimisation steps outside it.
+                # Autocast only on CUDA: on CPU and MPS it does not take float32 and would only warn.
+                with torch.autocast(device_type=device.type, dtype=net.dtype, enabled=device.type == "cuda"):
+                    y = net(X)[0]
+                    loss = _compute_loss(y, lbl)
+                if not torch.isfinite(loss):  # a step on a NaN or infinite loss would ruin the weights
+                    raise FloatingPointError(
+                        f"Loss {loss.item()} at epoch {iepoch + 1}, tiles {[int(i) for i in inds]} (after the filter): "
+                        "training stopped, nothing saved."
+                    )
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                train_losses[iepoch] += loss.item() * len(X)  # a sum over tiles: the last batch may be smaller
 
-            # Only the forward pass and the loss under autocast; the optimisation steps outside it.
-            with torch.autocast(device_type=device.type, dtype=net.dtype):
-                y = net(X)[0]
-                loss = _compute_loss(y, lbl)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            train_losses[iepoch] += loss.item() * len(X)  # a sum over tiles: the last batch may be smaller
+            train_losses[iepoch] /= nimg  # the epoch's mean loss per tile
+            if iepoch == 5 or iepoch % 10 == 0 or iepoch == n_epochs - 1:
+                train_logger.info(
+                    "Epoch %d/%d: loss %.4f, learning rate %.2e, %.0f s",
+                    iepoch + 1,
+                    n_epochs,
+                    train_losses[iepoch],
+                    LR[iepoch],
+                    time.time() - t0,
+                )
 
-        train_losses[iepoch] /= nimg  # the epoch's mean loss per tile
-        if iepoch == 5 or iepoch % 10 == 0 or iepoch == n_epochs - 1:
-            train_logger.info(
-                "Epoch %d/%d: loss %.4f, learning rate %.2e, %.0f s",
-                iepoch + 1,
-                n_epochs,
-                train_losses[iepoch],
-                LR[iepoch],
-                time.time() - t0,
-            )
-
-    # Save first, while the network is still float32 (the saved weights are float32), then convert it back.
-    net.save_model(filename)
-    if original_net_dtype != torch.float32:
-        train_logger.info("Network converted back to %s", original_net_dtype)
-        net.dtype = original_net_dtype
+        # Saved while the network is still float32: the saved weights are float32.
+        net.save_model(filename)
+    finally:  # the network gets its dtype back even when training fails
+        if net.dtype != original_net_dtype:
+            train_logger.info("Network converted back to %s", original_net_dtype)
+            net.dtype = original_net_dtype
     return filename, train_losses, np.zeros(n_epochs)  # no test set: zero test losses
