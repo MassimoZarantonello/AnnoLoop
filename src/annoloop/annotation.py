@@ -2,10 +2,12 @@
 
 One self-contained folder per image, in the AnnoCell layout (``annocell.folder``), corrected in AnnoCell's napari
 tool (a separate package). Each annotator has one folder with their rounds and test images:
-``<root>/<annotator>/round_<NN>/<image>/`` and ``<root>/<annotator>/test/<region>/``; one annotator per image.
+``<root>/<annotator>/round_<NN>/<image>/`` and ``<root>/<annotator>/test/<region>/``. An image of a round has one
+primary annotator, whose version goes into training, and may have other annotators, whose versions only measure
+how annotators differ (``role`` in annotation.json; AnnoLoop.md, O1).
 
-- ``export_round``: a whole image for one annotator: all channels, the proposed masks and read-only comparison
-  masks of other segmentations;
+- ``export_round``: a whole image for its primary annotator and its other annotators, one folder each: all
+  channels, the proposed masks and read-only comparison masks of other segmentations;
 - ``export_test``: a test image, drawn from scratch (no masks at all), never used for training; refused within
   ``margin_px`` of an annotated image of the same slide, and the reverse is enforced by ``annoloop.train``;
 - ``close_round``: the round is over (decided by hand): AnnoCell opens its images read-only, and the proposal of
@@ -37,6 +39,9 @@ from annoloop.version import code_commit
 
 SCORE_THRESHOLDS = (0.5, 0.75)
 MARGIN_PX = 60  # about one cell diameter at 0.17 µm / pixel
+# An image's ``role`` in annotation.json: its one primary annotator, whose version goes into training, or one of its
+# other annotators, whose versions only measure how annotators differ (AnnoLoop.md, O1). No role: primary.
+PRIMARY, OTHER = "primary", "other"
 
 
 def export_round(
@@ -47,15 +52,17 @@ def export_round(
     root: str | Path,
     round_number: int,
     annotator: str,
+    other_annotators: Sequence[str] = (),
     compare: Sequence[str] = (),
     visible_channels: Sequence[str] | None = None,
     colours: Mapping[str, str] | None = None,
     models_root: str | Path | None = None,
     settings: Mapping | None = None,
     overwrite: bool = False,
-) -> Path:
-    """Write the folder of image ``name`` for ``annotator`` in round ``round_number`` and return it:
-    ``<root>/<annotator>/round_<NN>/<name>/``.
+) -> dict[str, Path]:
+    """Write the folders of image ``name`` in round ``round_number`` for ``annotator`` (the primary) and for each of
+    ``other_annotators``, ``<root>/<annotator>/round_<NN>/<name>/``, and return them by annotator. All get the same
+    image and proposal; the record's ``role`` is ``PRIMARY`` or ``OTHER``.
 
     ``element``: the image element of ``sdata``; ``proposal``: the segmentation whose labels element (already in
     ``sdata``) becomes the proposed masks; its channels are what a model trained on this image learns from.
@@ -65,51 +72,61 @@ def export_round(
     the settings the export was made with, recorded as is. An existing folder is left untouched (it may hold
     corrections) unless ``overwrite``, which also discards the corrections.
 
-    Refused in a closed round, if the image is already given to another annotator in this round, and if it was
-    given in an earlier round: every image is annotated once (AnnoLoop.md, D17).
+    Refused, before any folder is written: in a closed round, if the image is already given in this round to
+    someone who is neither ``annotator`` nor one of ``other_annotators``, and if it was given in an earlier round:
+    every image is annotated in one round (AnnoLoop.md, D17).
     """
-    folder = af.round_folder(root, annotator, round_number) / name
-    same_round = [r for r in af.images(root) if r.round == round_number]
-    if any(af.is_closed(af.read_record(r.folder)) for r in same_round):
-        raise ValueError(f"Round {round_number} is closed: export into a new round.")
-    others = sorted(r.annotator for r in same_round if r.name == name and r.annotator != annotator)
-    if others:
-        raise ValueError(f"{name} is already given to {others} in round {round_number}: one annotator per image.")
-    before = given_in_other_rounds(root, name, round_number)
-    if before:
-        raise ValueError(f"{name} was already given in {before}: every image is annotated once.")
-    if (folder / af.RECORD).exists() and not overwrite:
-        return folder
-    _clear(folder)
-    # Everything the tool shows is copied into the folder: the annotator's computer has no store.
-    image, channels = _image(sdata, element)
-    af.write_image(folder, image)
-    af.write_masks(folder, _masks(sdata, proposal.labels), af.START)
-    for other in compare:
-        af.write_masks(folder / af.COMPARE, _masks(sdata, other), f"{other}.tif")
-    record = {
-        "annotator": annotator,
-        "round": round_number,
-        "image": name,
-        "mode": "train",
-        "format_version": af.FORMAT_VERSION,
-        "exported_on": date.today().isoformat(),
-        **_provenance(sdata, element),
-        "region": _slide_region(sdata, image.shape[1:]),
-        "channels": channels,
-        "visible_channels": list(visible_channels or proposal.channels),
-        "colours": dict(colours or {}),
-        "start_segmentation": {
-            "labels": proposal.labels,
-            "model": proposal.model,
-            "channels": list(proposal.channels),
-        },
-        "compare": [{"labels": other, "trained_on_image": _trained_on(models_root, other, name)} for other in compare],
-    }
-    if settings is not None:
-        record["settings"] = dict(settings)
-    af.write_record(folder, record)
-    return folder
+    all_annotators = annotator, *other_annotators
+    round_dict = {}
+    for a in all_annotators:
+        role = PRIMARY if a == annotator else OTHER
+        folder = af.round_folder(root, a, round_number) / name
+        same_round = [r for r in af.images(root) if r.round == round_number]
+        if any(af.is_closed(af.read_record(r.folder)) for r in same_round):
+            raise ValueError(f"Round {round_number} is closed: export into a new round.")
+        others = sorted(r.annotator for r in same_round if r.name == name and r.annotator not in all_annotators)
+        if others:
+            raise ValueError(f"{name} is already given to {others} in round {round_number}: one annotator per image.")
+        before = given_in_other_rounds(root, name, round_number)
+        if before:
+            raise ValueError(f"{name} was already given in {before}: every image is annotated once.")
+        if (folder / af.RECORD).exists() and not overwrite:
+            round_dict[a] = folder
+            continue
+        _clear(folder)
+        # Everything the tool shows is copied into the folder: the annotator's computer has no store.
+        image, channels = _image(sdata, element)
+        af.write_image(folder, image)
+        af.write_masks(folder, _masks(sdata, proposal.labels), af.START)
+        for other in compare:
+            af.write_masks(folder / af.COMPARE, _masks(sdata, other), f"{other}.tif")
+        record = {
+            "annotator": a,
+            "role": role,
+            "round": round_number,
+            "image": name,
+            "mode": "train",
+            "format_version": af.FORMAT_VERSION,
+            "exported_on": date.today().isoformat(),
+            **_provenance(sdata, element),
+            "region": _slide_region(sdata, image.shape[1:]),
+            "channels": channels,
+            "visible_channels": list(visible_channels or proposal.channels),
+            "colours": dict(colours or {}),
+            "start_segmentation": {
+                "labels": proposal.labels,
+                "model": proposal.model,
+                "channels": list(proposal.channels),
+            },
+            "compare": [
+                {"labels": other, "trained_on_image": _trained_on(models_root, other, name)} for other in compare
+            ],
+        }
+        if settings is not None:
+            record["settings"] = dict(settings)
+        af.write_record(folder, record)
+        round_dict[a] = folder
+    return round_dict
 
 
 def given_in_other_rounds(root: str | Path, name: str, round_number: int) -> str | None:
@@ -243,9 +260,10 @@ def load_test_images(root: str | Path) -> list[dict]:
 
 
 def summarize_rounds(annotations: pd.DataFrame, by: Sequence[str] = ("round",)) -> pd.DataFrame:
-    """Per round (or per ``by``, e.g. ``("round", "annotator")``): annotators, images (all, complete: going into
-    training), the corrections in the images AnnoCell saved (its review: cells kept as proposed, edited, deleted,
-    drawn new, OK'd by hand and in bulk), and the mean score of the proposal on the complete images (from
+    """Per round (or per ``by``, e.g. ``("round", "annotator")``): annotators, images (all, complete; an image with
+    other annotators counts once per annotator, and only its primary version goes into training), the corrections
+    in the images AnnoCell saved (its review: cells kept as proposed, edited, deleted, drawn new, OK'd by hand and
+    in bulk), and the mean score of the proposal on the complete images (from
     ``score_start``, written when the round is closed)."""
     if annotations.empty:
         return pd.DataFrame()

@@ -14,7 +14,7 @@ from annocell import folder as af
 from scipy import ndimage as ndi
 
 from annoloop import settings as st
-from annoloop.annotation import close_round
+from annoloop.annotation import OTHER, PRIMARY, close_round
 from annoloop.loop import check_round, main, prepare_round, proposal
 from annoloop.settings import ConfigError
 
@@ -56,8 +56,8 @@ def _round(**changes):
     raw = {
         "round": 1,
         "images": {
-            "img_a": {"path": "slide_a.ome.tif", "annotators": ["alice"]},
-            "img_b": {"path": "slide_b.ome.tif", "crop": [0, 32, 0, 40], "annotators": ["bob"]},
+            "img_a": {"path": "slide_a.ome.tif", "annotator": "alice"},
+            "img_b": {"path": "slide_b.ome.tif", "crop": [0, 32, 0, 40], "annotator": "bob"},
         },
     }
     return {**raw, **changes}
@@ -91,6 +91,16 @@ def test_settings_load_and_resolve_image_paths(tmp_path):
     assert st.ANNOTATOR.pattern == af.ANNOTATOR.pattern
 
 
+def test_an_image_can_have_other_annotators(tmp_path):
+    round_raw = _round(images={"img": {"path": "x.tif", "annotator": "alice", "other_annotators": ["bob", "carla"]}})
+    _, round_settings = _load(tmp_path, round_raw=round_raw)
+    [image] = round_settings.images
+    assert image.annotator == "alice" and image.other_annotators == ("bob", "carla")
+    assert round_settings.by_annotator() == {"alice": ["img"], "bob": ["img"], "carla": ["img"]}
+    _, round_settings = _load(tmp_path)  # no other_annotators: an empty tuple
+    assert round_settings.images[0].other_annotators == ()
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
@@ -111,10 +121,13 @@ def test_global_settings_errors(tmp_path, change, message):
     ("change", "message"),
     [
         ({"images": {}}, "at least one image"),
-        ({"images": {"img a": {"path": "x.tif", "annotators": ["alice"]}}}, "letters, digits"),
-        ({"images": {"img": {"path": "x.tif", "annotators": ["Alice"]}}}, "lowercase"),
-        ({"images": {"img": {"path": "x.tif", "annotators": ["al", "al"]}}}, "listed twice"),
-        ({"images": {"img": {"path": "x.tif", "annotators": []}}}, "non-empty list"),
+        ({"images": {"img a": {"path": "x.tif", "annotator": "alice"}}}, "letters, digits"),
+        ({"images": {"img": {"path": "x.tif", "annotator": "Alice"}}}, "lowercase"),
+        ({"images": {"img": {"path": "x.tif", "annotator": "al", "annotators": ["al"]}}}, "unknown key"),
+        ({"images": {"img": {"path": "x.tif", "annotator": "al", "other_annotators": "bo"}}}, "expected a list"),
+        ({"images": {"img": {"path": "x.tif", "annotator": "al", "other_annotators": ["Bo"]}}}, "lowercase"),
+        ({"images": {"img": {"path": "x.tif", "annotator": "al", "other_annotators": ["bo", "bo"]}}}, "listed twice"),
+        ({"images": {"img": {"path": "x.tif", "annotator": "al", "other_annotators": ["al"]}}}, "already the image's"),
         ({"images": {"img": {"path": "x.tif"}}}, "missing required key"),
         ({"model": "start_cells"}, "starting segmentation"),
         ({"round": 0}, "positive integer"),
@@ -167,20 +180,41 @@ def test_dry_run_does_nothing(tmp_path, raw):
     assert len(folders) == 2 and not (tmp_path / "runs").exists() and not (tmp_path / "annotations").exists()
 
 
+def test_an_image_is_exported_to_its_other_annotators_too(tmp_path, raw):
+    shared = {
+        "img_a": {"path": "slide_a.ome.tif", "annotator": "alice", "other_annotators": ["carla"]},
+        "img_b": {"path": "slide_b.ome.tif", "annotator": "bob"},
+    }
+    settings, round_settings = _load(tmp_path, round_raw=_round(images=shared))
+    assert len(prepare_round(settings, round_settings, dry_run=True, model=CountingModel())) == 3
+    model = CountingModel()
+    folders = prepare_round(settings, round_settings, model=model)
+    root = Path(settings.paths.annotations)
+    assert folders == [
+        root / "alice" / "round_01" / "img_a",
+        root / "carla" / "round_01" / "img_a",
+        root / "bob" / "round_01" / "img_b",
+    ]
+    assert [af.read_record(f)["role"] for f in folders] == [PRIMARY, OTHER, PRIMARY]
+    assert model.calls == 2  # one segmentation per image, however many annotators
+    assert prepare_round(settings, round_settings, model=model) == folders  # a second run: kept, no refusal
+    # carla is not listed for img_a any more: refused.
+    alone = _round(images={"img_a": {"path": "slide_a.ome.tif", "annotator": "alice"}})
+    with pytest.raises(ValueError, match=r"img_a is already given to \['carla'\]"):
+        check_round(settings, st.parse_round(alone, settings))
+
+
 def test_check_round_refuses_before_any_work(tmp_path, raw):
     settings, round_settings = _load(tmp_path)
-    shared = _round(images={"img_a": {"path": "slide_a.ome.tif", "annotators": ["alice", "bob"]}})
-    with pytest.raises(ValueError, match="shared by"):
-        check_round(settings, st.parse_round(shared, settings))
-    missing = _round(images={"img_c": {"path": "nowhere.tif", "annotators": ["alice"]}})
+    missing = _round(images={"img_c": {"path": "nowhere.tif", "annotator": "alice"}})
     with pytest.raises(ValueError, match="no raw file"):
         check_round(settings, st.parse_round(missing, settings))
 
     prepare_round(settings, round_settings, model=CountingModel())
-    moved = _round(images={"img_a": {"path": "slide_a.ome.tif", "annotators": ["carla"]}})
+    moved = _round(images={"img_a": {"path": "slide_a.ome.tif", "annotator": "carla"}})
     with pytest.raises(ValueError, match=r"already given to \['alice'\]"):
         check_round(settings, st.parse_round(moved, settings))
-    again = _round(round=2, images={"img_a": {"path": "slide_a.ome.tif", "annotators": ["alice"]}})
+    again = _round(round=2, images={"img_a": {"path": "slide_a.ome.tif", "annotator": "alice"}})
     with pytest.raises(ValueError, match=r"img_a was already given in round 1 \(alice\)"):
         check_round(settings, st.parse_round(again, settings))
     close_round(settings.paths.annotations, 1)
@@ -192,7 +226,7 @@ def test_a_store_name_is_not_reused_for_another_image(tmp_path, raw):
     settings, round_settings = _load(tmp_path)
     prepare_round(settings, round_settings, model=CountingModel())
     shutil.rmtree(settings.paths.annotations)  # the store stays, e.g. from a run whose round file was then changed
-    other = _round(round=2, images={"img_a": {"path": "slide_b.ome.tif", "annotators": ["alice"]}})
+    other = _round(round=2, images={"img_a": {"path": "slide_b.ome.tif", "annotator": "alice"}})
     with pytest.raises(ValueError, match="give the image another name"):
         prepare_round(settings, st.parse_round(other, settings), model=CountingModel())
 
@@ -283,7 +317,7 @@ def test_train_from_the_start_model_on_every_round_or_sequentially(tmp_path, raw
     assert train_round(settings, round_1) == first and len(fake_cellpose) == 1  # exists: not trained again
 
     round_2 = st.parse_round(
-        _round(round=2, model="model_r01", images={"img_c": {"path": "slide_a.ome.tif", "annotators": ["carla"]}}),
+        _round(round=2, model="model_r01", images={"img_c": {"path": "slide_a.ome.tif", "annotator": "carla"}}),
         settings,
     )
     _complete_all(prepare_round(settings, round_2, model=CountingModel()))

@@ -5,8 +5,8 @@
    (e.g. NaK_ATPase + DAPI + F480), together with its corrected masks, cut into square tiles. Every tile is used
    for training: there is no validation split (it cost a fifth of the corrected cells for a loss no decision used);
    models are scored on the test images. Test images (``annoloop.annotation.export_test``) never enter it, and
-   tiles within ``margin_px`` of a test image of the same slide are dropped. One annotator per image: an image
-   complete for two is refused.
+   tiles within ``margin_px`` of a test image of the same slide are dropped. Only the primary annotator's version of
+   an image: other annotators' versions (``role``: ``other``) are left out; two complete primaries are refused.
 2. ``train``: fine-tune a Cellpose model on the tiles, with the ``training`` settings (the same every round: never
    changed after looking at a test score), and save it in ``<models>/<name>/``: the weights (``<name>``),
    ``tiles.csv`` (every tile) and ``model.json`` (start model, channels, images, settings, losses, versions).
@@ -36,6 +36,7 @@ from skimage.segmentation import relabel_sequential
 from annoloop.accuracy import score
 from annoloop.annotation import (
     MARGIN_PX,
+    PRIMARY,
     SCORE_THRESHOLDS,
     corrected_masks,
     load_annotations,
@@ -77,14 +78,17 @@ def training_set(
     annotations = load_annotations(root)
     # Only complete training images; test images (<annotator>/test) are never read here.
     done = annotations[annotations["complete"]] if not annotations.empty else annotations
+    # Only the primary annotator's version: the other annotators' are for comparing annotators, never training.
+    if "role" in done:
+        done = done[done["role"].fillna(PRIMARY) == PRIMARY]
     if rounds is not None and not done.empty:
         done = done[done["round"].isin(list(rounds))]
     if done.empty:
         where = "" if rounds is None else f" in rounds {sorted(rounds)}"
         raise ValueError(f"No complete image under {root}{where}: every cell must be OK and Done pressed.")
     twice = done.loc[done["image"].duplicated(keep=False), ["image", "annotator"]]
-    if not twice.empty:  # blending several annotators of one image is not built (docs/concurrent_annotations.md)
-        raise ValueError(f"Images complete for more than one annotator: {twice.to_dict('records')}.")
+    if not twice.empty:  # one primary per image: two can only come from a folder copied by hand
+        raise ValueError(f"Images complete for more than one primary annotator: {twice.to_dict('records')}.")
     tests = load_test_images(root)
     if channels is None:
         options = {tuple(c) for c in done["start_segmentation.channels"]}

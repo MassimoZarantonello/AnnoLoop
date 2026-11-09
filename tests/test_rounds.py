@@ -11,6 +11,8 @@ from spatialdata import SpatialData
 from spatialdata.models import Image2DModel, Labels2DModel
 
 from annoloop.annotation import (
+    OTHER,
+    PRIMARY,
     close_round,
     corrected_masks,
     export_round,
@@ -51,7 +53,10 @@ def exported(sdata, tmp_path):
     (models / "model_a").mkdir(parents=True)
     (models / "model_a" / "model.json").write_text(json.dumps({"images": [{"round": 1, "image": "test_image"}]}))
     root = tmp_path / "annotations"
-    return export_round(sdata, "test_image", "img", PROPOSAL, root, 2, "alice", compare=["model_a"], models_root=models)
+    folders = export_round(
+        sdata, "test_image", "img", PROPOSAL, root, 2, "alice", compare=["model_a"], models_root=models
+    )
+    return folders["alice"]
 
 
 def _complete(folder, masks=None):
@@ -75,7 +80,7 @@ def test_export_round_writes_a_self_contained_folder(exported, sdata):
     record = af.read_record(folder)
     assert record["mode"] == "train" and record["region"] == [100, 120, 200, 230]
     assert record["annotator"] == "alice" and record["round"] == 2
-    assert record["format_version"] == af.FORMAT_VERSION and "role" not in record and "status" not in record
+    assert record["format_version"] == af.FORMAT_VERSION and record["role"] == PRIMARY and "status" not in record
     assert record["visible_channels"] == ["NaK", "DAPI"]
     assert record["start_segmentation"] == {"labels": "cells", "model": "cpsam_v2", "channels": ["NaK", "DAPI"]}
     assert record["compare"] == [{"labels": "model_a", "trained_on_image": True}] and record["colours"] == {}
@@ -87,7 +92,7 @@ def test_export_round_writes_a_self_contained_folder(exported, sdata):
 def test_export_round_keeps_corrections_unless_overwrite(exported, sdata):
     root = exported.parents[2]
     af.save(exported, af.read_start(exported), {})
-    assert export_round(sdata, "test_image", "img", PROPOSAL, root, 2, "alice") == exported
+    assert export_round(sdata, "test_image", "img", PROPOSAL, root, 2, "alice") == {"alice": exported}
     assert (exported / af.MASKS).exists()
     export_round(sdata, "test_image", "img", PROPOSAL, root, 2, "alice", overwrite=True)
     assert not (exported / af.MASKS).exists() and not (exported / af.COMPARE).exists()
@@ -122,9 +127,23 @@ def test_export_test_starts_empty_and_refuses_annotated_images(exported, sdata):
     assert af.read_masks(folder, (10, 10)).max() == 0
 
 
-def test_one_annotator_per_image_and_closed_rounds(exported, sdata):
+def test_an_image_with_other_annotators_gets_one_folder_each_with_its_role(exported, sdata):
     root = exported.parents[2]
-    with pytest.raises(ValueError, match="one annotator per image"):
+    folders = export_round(sdata, "test_image", "img", PROPOSAL, root, 2, "alice", other_annotators=["bob", "carla"])
+    assert folders["alice"] == exported  # alice's folder was already there: kept as it was
+    assert folders["bob"] == root / "bob" / "round_02" / "test_image"
+    roles = {person: af.read_record(folder)["role"] for person, folder in folders.items()}
+    assert roles == {"alice": PRIMARY, "bob": OTHER, "carla": OTHER}
+    np.testing.assert_array_equal(af.read_start(folders["bob"]), af.read_start(exported))  # the same proposal
+    # Someone not listed for the image is refused, before any folder is written.
+    with pytest.raises(ValueError, match="already given to"):
+        export_round(sdata, "test_image", "img", PROPOSAL, root, 2, "dan", other_annotators=["alice"])
+    assert not (root / "dan").exists()
+
+
+def test_an_image_goes_only_to_its_annotators_and_closed_rounds(exported, sdata):
+    root = exported.parents[2]
+    with pytest.raises(ValueError, match=r"already given to \['alice'\]"):
         export_round(sdata, "test_image", "img", PROPOSAL, root, 2, "bob")
     with pytest.raises(ValueError, match="lowercase"):
         export_round(sdata, "test_image", "img", PROPOSAL, root, 3, "Bob")
@@ -141,7 +160,7 @@ def test_close_round_scores_the_complete_images_and_summary(exported, sdata):
     masks = af.read_start(exported)
     masks[masks == 3] = 0  # deleted
     _complete(exported, masks)
-    other = export_round(sdata, "other", "img", PROPOSAL, root, 2, "bob")
+    other = export_round(sdata, "other", "img", PROPOSAL, root, 2, "bob")["bob"]
     sdata.attrs.update(crop=[100, 120, 400, 430])
     export_test(sdata, "test_image", "img", [5, 15, 10, 20], root, "carla")
     close_round(root, 2)

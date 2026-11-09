@@ -9,4 +9,5 @@ images:
   exp201_spc331:  # the image's folder name for its annotator, and its store <runs>/exp201_spc331.zarr
     path: Exp201_SPC331_261014_AVH_SUBSET_SingleTiff.tif  # relative to paths.input
     crop: null    # optional [y0, y1, x0, x1] in pixels of the level; null = the whole image
-    annotators: [annotator-1]  # one per image until shared images are built (O1)
+    annotator: annotator-1  # the primary annotator: their version goes into training
+    # other_annotators: [annotator-2]  # optional: the same image to compare annotators, never trained on (O1)

@@ -6,8 +6,9 @@ before any GPU work.
 
 - ``prepare``: for each image of the round: ingest the raw file into ``<runs>/<image>.zarr`` (once), run the
   segmentation that proposes the masks (the starting one, or the round's fine-tuned model; once per store), and
-  export one AnnoCell folder per annotator (``annoloop.annotation.export_round``; a folder that exists is kept,
-  with its corrections). ``--dry-run`` only says what would be done.
+  export one AnnoCell folder for the image's annotator and one for each of its other annotators
+  (``annoloop.annotation.export_round``; a folder that exists is kept, with its corrections). ``--dry-run`` only
+  says what would be done.
 - ``close``: close the round for every annotator (``annoloop.annotation.close_round``).
 - ``train``: fine-tune on the complete images of the round (``annoloop.train``), saved as ``<models>/model_r<NN>``,
   the name a later round file gives as its ``model``. By default from the starting model (``start.model``) on every
@@ -59,8 +60,8 @@ def store_path(settings: GlobalSettings, image: RoundImage) -> Path:
 def check_round(settings: GlobalSettings, round_settings: RoundSettings) -> Segmentation:
     """Everything that can be checked before any work: returns the proposing segmentation, or raises.
 
-    Refused: a closed round; a shared image (several annotators; AnnoLoop.md, O1); an image already given to
-    another annotator in this round, or given in another round (each image is annotated once, D17); a missing raw
+    Refused: a closed round; an image already given in this round to someone who is neither its annotator nor one
+    of its other annotators, or given in another round (each image is annotated in one round, D17); a missing raw
     file (unless its store exists); a missing model; a segmentation on channels that are not defined."""
     from annocell import folder as af
 
@@ -77,9 +78,11 @@ def check_round(settings: GlobalSettings, round_settings: RoundSettings) -> Segm
     if any(af.is_closed(af.read_record(r.folder)) for r in existing):
         problems.append(f"round {round_settings.round} is closed: write a new round file")
     for image in round_settings.images:
-        if len(image.annotators) > 1:
-            problems.append(f"{image.name} is shared by {list(image.annotators)}: shared images are not built yet (O1)")
-        others = sorted(r.annotator for r in existing if r.name == image.name and r.annotator not in image.annotators)
+        others = sorted(
+            r.annotator
+            for r in existing
+            if r.name == image.name and r.annotator not in (image.annotator, *image.other_annotators)
+        )
         if others:
             problems.append(f"{image.name} is already given to {others} in round {round_settings.round}")
         before = given_in_other_rounds(settings.paths.annotations, image.name, round_settings.round)
@@ -118,7 +121,10 @@ def prepare_round(
     for image in round_settings.images:
         store = store_path(settings, image)
         root = settings.paths.annotations
-        targets = {a: af.round_folder(root, a, round_settings.round) / image.name for a in image.annotators}
+        targets = {
+            a: af.round_folder(root, a, round_settings.round) / image.name
+            for a in (image.annotator, *image.other_annotators)
+        }
         existed = {a: (folder / af.RECORD).exists() for a, folder in targets.items()}
         if dry_run:
             log.info("%s: store %s (%s)", image.name, store, "exists" if store.exists() else "to ingest")
@@ -128,8 +134,8 @@ def prepare_round(
             continue
         sdata = _store(settings, image)
         sdata = _segmentation(sdata, settings, image, step, model, **model_kwargs)
-        for annotator in image.annotators:
-            folder = _export(sdata, image, settings, round_settings, step, annotator)
+        exports = _export(sdata, image, settings, round_settings, step, image.annotator, image.other_annotators)
+        for annotator, folder in exports.items():
             log.info("%s: %s %s", image.name, "kept" if existed[annotator] else "exported", folder)
             folders.append(folder)
     return folders
@@ -295,7 +301,15 @@ def _segmentation(sdata, settings: GlobalSettings, image: RoundImage, step: Segm
     return sdata
 
 
-def _export(sdata, image: RoundImage, settings: GlobalSettings, round_settings: RoundSettings, step, annotator: str):
+def _export(
+    sdata,
+    image: RoundImage,
+    settings: GlobalSettings,
+    round_settings: RoundSettings,
+    step,
+    annotator: str,
+    other_annotators: tuple[str, ...],
+):
     from annoloop.annotation import export_round
 
     display = settings.display
@@ -307,6 +321,7 @@ def _export(sdata, image: RoundImage, settings: GlobalSettings, round_settings: 
         settings.paths.annotations,
         round_settings.round,
         annotator,
+        other_annotators,
         visible_channels=display.visible_channels,
         colours=display.colours,
         models_root=settings.paths.models,

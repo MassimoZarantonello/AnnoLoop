@@ -38,7 +38,8 @@ Round file::
       exp201_spc331:          # the image's name: its folder for every annotator, and its store
         path: Exp201_SPC331_261014_AVH_SUBSET_SingleTiff.tif   # relative to paths.input
         crop: null            # optional [y0, y1, x0, x1] in pixels of the level
-        annotators: [anna]    # more than one: a shared image (AnnoLoop.md, O1)
+        annotator: anna       # the primary annotator: their version goes into training
+        other_annotators: [bob]   # optional: the same image for comparing annotators, never trained on (O1)
 """
 
 from __future__ import annotations
@@ -113,8 +114,9 @@ class RoundImage:
     name: str
     path: str
     """The raw file, resolved against ``paths.input``."""
-    annotators: tuple[str, ...]
+    annotator: str
     crop: tuple[int, int, int, int] | None = None
+    other_annotators: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -126,10 +128,10 @@ class RoundSettings:
     source: str = "<round>"
 
     def by_annotator(self) -> dict[str, list[str]]:
-        """Annotator -> the names of their images in this round."""
+        """Annotator -> the names of their images in this round, as the primary or an other annotator."""
         out: dict[str, list[str]] = {}
         for image in self.images:
-            for annotator in image.annotators:
+            for annotator in (image.annotator, *image.other_annotators):
                 out.setdefault(annotator, []).append(image.name)
         return dict(sorted(out.items()))
 
@@ -237,18 +239,27 @@ def parse_round(raw: Any, settings: GlobalSettings, source: str = "<round>") -> 
         where = f"{source}: images.{name}"
         name = _name(name, where)
         section = _mapping(value, where)
-        _check_keys(section, where, required={"path", "annotators"}, optional={"crop"})
-        annotators = section["annotators"]
-        if not isinstance(annotators, list) or not annotators:
-            raise ConfigError(f"{where}.annotators: expected a non-empty list of annotator names.")
-        annotators = tuple(_annotator(a, f"{where}.annotators") for a in annotators)
-        if len(set(annotators)) != len(annotators):
-            raise ConfigError(f"{where}.annotators: an annotator is listed twice: {list(annotators)}.")
+        _check_keys(section, where, required={"path", "annotator"}, optional={"crop", "other_annotators"})
+        annotator = _annotator(section["annotator"], f"{where}.annotator")
+        other_annotators = section.get("other_annotators", [])
+        if not isinstance(other_annotators, list):
+            raise ConfigError(
+                f"{where}.other_annotators: expected a list of annotator names, got {other_annotators!r}."
+            )
+        other_annotators = tuple(_annotator(a, f"{where}.other_annotators") for a in other_annotators)
+        if annotator in other_annotators:
+            raise ConfigError(f"{where}.other_annotators: {annotator!r} is already the image's annotator.")
+        if len(set(other_annotators)) != len(other_annotators):
+            raise ConfigError(f"{where}.other_annotators: an annotator is listed twice: {list(other_annotators)}.")
         path = Path(_path(section["path"], f"{where}.path"))
         path = path if path.is_absolute() else Path(settings.paths.input) / path
         images.append(
             RoundImage(
-                name=name, path=str(path), annotators=annotators, crop=_crop(section.get("crop"), f"{where}.crop")
+                name=name,
+                path=str(path),
+                annotator=annotator,
+                crop=_crop(section.get("crop"), f"{where}.crop"),
+                other_annotators=other_annotators,
             )
         )
     return RoundSettings(round=number, images=tuple(images), model=model, source=source)

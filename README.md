@@ -91,7 +91,8 @@ images:
   exp201_spc331:       # the image's name: its folder for the annotator, and its store
     path: Exp201_SPC331_261014_AVH_SUBSET_SingleTiff.tif   # relative to paths.input
     crop: null         # optional [y0, y1, x0, x1] in pixels
-    annotators: [annotator-1]
+    annotator: annotator-1             # their corrected version goes into training
+    other_annotators: [annotator-2]    # optional: the same image, to compare annotators; never trained on
 ```
 
 Both files are checked strictly before anything runs. Unknown or missing keys are errors, and so are channels that
@@ -108,8 +109,7 @@ annoloop prepare configs/annoloop.yaml configs/rounds/round_01.yaml --device cud
 First the whole round is checked. The command refuses any of these:
 
 - a closed round;
-- an image given to more than one annotator (shared images are not built yet);
-- an image already given to someone else in this round;
+- an image already given in this round to someone who is neither its annotator nor one of its other annotators;
 - an image already given in an earlier round: each image is annotated once;
 - a raw file that is missing;
 - a model that is missing.
@@ -210,8 +210,9 @@ for that yet.
 ```
 
 Each file has one writer, so a save in AnnoCell and a `close` here never overwrite each other. The annotator's
-computer needs only AnnoCell, never this repository. A plan for blending several annotators of one image is in
-[docs/concurrent_annotations.md](docs/concurrent_annotations.md); it is not built.
+computer needs only AnnoCell, never this repository. An image can go to other annotators besides its annotator (`other_annotators`): each gets their
+own folder (`"role": "other"` in `annotation.json`), and only the annotator's version goes into training. How to
+compare the versions is in [docs/concurrent_annotations.md](docs/concurrent_annotations.md); it is not built.
 
 ## Modules
 
@@ -235,4 +236,5 @@ choice goes into `start` in the global settings.
 - Cluster job scripts (SLURM), once the cluster and the storage are decided.
 - Unit tests for our training loop (`annoloop.trainer`, the default since 2026-11-05; how it was built:
   [docs/training_loop.md](docs/training_loop.md)), and a longer comparison with Cellpose's loop on the cluster.
-- Shared images (several annotators per image) and the progress measure across rounds.
+- The annotator-bias analysis on the shared images (several annotators per image), and the progress measure across
+  rounds.

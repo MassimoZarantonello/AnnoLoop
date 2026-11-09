@@ -45,7 +45,7 @@ def annotated(tmp_path):
         labels={"cells": Labels2DModel.parse(labels, dims=("y", "x"))},
     )
     root = tmp_path / "annotations"
-    folder = export_round(sdata, "img", "img", PROPOSAL, root, 1, "alice")
+    folder = export_round(sdata, "img", "img", PROPOSAL, root, 1, "alice")["alice"]
     _complete(folder, edited=[(4, 4), (52, 52)])  # first cell (tile at 0, 0) and last cell (tile at 32, 32)
     return root, image, sdata
 
@@ -66,13 +66,24 @@ def test_an_image_is_annotated_in_one_round_only(annotated):
     with pytest.raises(ValueError, match=r"already given in round 1 \(alice\): every image is annotated once"):
         export_round(sdata, "img", "img", PROPOSAL, root, 2, "bob")
     # A second copy made by hand (outside export_round) is still refused by training, not used twice.
-    other = export_round(sdata, "other", "img", PROPOSAL, root, 2, "bob")
+    other = export_round(sdata, "other", "img", PROPOSAL, root, 2, "bob")["bob"]
     assert len(training_set(root, tile_px=32).tiles) == 4  # bob has not finished: left out
     _complete(other)
     record = af.read_record(other)
     af.write_record(other, {**record, "image": "img"})
-    with pytest.raises(ValueError, match="more than one annotator"):
+    with pytest.raises(ValueError, match="more than one primary annotator"):
         training_set(root, tile_px=32)
+
+
+def test_training_set_uses_only_the_primary_version_of_an_image(annotated):
+    root, _, sdata = annotated
+    other = export_round(sdata, "img", "img", PROPOSAL, root, 1, "alice", other_annotators=["bob"])["bob"]
+    _complete(other, edited=[(20, 20)])
+    data = training_set(root, tile_px=32)
+    assert len(data.tiles) == 4 and set(data.tiles["annotator"]) == {"alice"}  # bob's version left out, no error
+    # An image whose only complete version is an other annotator's does not go into training at all.
+    af.write_record(other, {**af.read_record(other), "image": "img2"})
+    assert set(training_set(root, tile_px=32).tiles["image"]) == {"img"}
 
 
 def test_training_set_leaves_out_test_images_and_tiles_near_them(annotated):
